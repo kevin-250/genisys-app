@@ -1,8 +1,20 @@
 const { FusesPlugin } = require('@electron-forge/plugin-fuses');
 const { FuseV1Options, FuseVersion } = require('@electron/fuses');
+const fs = require('node:fs');
+const path = require('node:path');
+
+// Build offline when this Electron version is already in the local download cache: otherwise every package run
+// fetches SHASUMS256.txt from GitHub, and a flaky connection fails the build with ECONNRESET.
+// (The cached zip was checksum-verified when it was first downloaded.) No cached zip -> normal download.
+const electronZipDir = (() => {
+  const zip = `electron-v${require('electron/package.json').version}-win32-x64.zip`;
+  const cache = path.join(process.env.LOCALAPPDATA || '', 'electron', 'Cache');
+  try { return fs.readdirSync(cache).map((d) => path.join(cache, d)).find((d) => fs.existsSync(path.join(d, zip))); } catch { return undefined; }
+})();
 
 module.exports = {
   packagerConfig: {
+    ...(electronZipDir && { electronZipDir }),
     asar: true,
     prune: true,
     executableName: 'genisys',
