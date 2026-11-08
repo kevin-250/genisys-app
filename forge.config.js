@@ -10,13 +10,14 @@ module.exports = {
     extraResource: ['assets', 'actions'], // window/toast icons + the action folders, read from process.resourcesPath
   },
   hooks: {
-    // Slimmer package: keep only the en-US locale and drop the Chromium license page.
+    // Slimmer package: keep only the en-US locale, drop the Chromium license page, and drop the DirectX shader
+    // compiler that only WebGPU uses (~27 MB; the app uses WebGL, which goes through d3dcompiler_47.dll instead).
     postPackage: async (_cfg, { outputPaths }) => {
       const fs = require('node:fs'); const path = require('node:path');
       for (const dir of outputPaths) {
         const loc = path.join(dir, 'locales');
         if (fs.existsSync(loc)) for (const f of fs.readdirSync(loc)) if (f !== 'en-US.pak') fs.rmSync(path.join(loc, f));
-        fs.rmSync(path.join(dir, 'LICENSES.chromium.html'), { force: true });
+        for (const f of ['LICENSES.chromium.html', 'dxcompiler.dll', 'dxil.dll']) fs.rmSync(path.join(dir, f), { force: true });
       }
     },
   },

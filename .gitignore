@@ -93,3 +93,6 @@ out/
 
 # Private API keys (seeded into %APPDATA%/Executor/config.json on first run)
 default-keys.json
+
+# built installers (npm run release / installer\build-installer.bat)
+installer/dist/

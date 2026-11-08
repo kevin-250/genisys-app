@@ -1,4 +1,4 @@
-; Genisys installer (Inno Setup 6). Build: package the app first (npm run package), then compile this file
+; Genisys installer (Inno Setup 6 or 7). Build: package the app first (npm run package), then compile this file
 ; with Inno Setup (or run build-installer.bat). Output: installer\dist\Genisys-Setup.exe
 #define AppName "Genisys"
 #define AppVersion "1.0.0"
@@ -22,8 +22,13 @@ WizardStyle=modern
 WizardImageFile=wizard.bmp
 WizardSmallImageFile=small.bmp
 SetupIconFile=..\assets\icon.ico
-UninstallDisplayIcon={app}\{#AppExe}
-Compression=lzma2/max
+; Installed apps list icon: the real .ico shipped in resources\assets (extraResource), so it does not depend on the exe's embedded icon.
+UninstallDisplayIcon={app}\resources\assets\icon.ico
+; Strongest LZMA2 settings (256 MB dictionary, needs ~3 GB RAM while compiling): ~10 MB smaller than lzma2/max.
+Compression=lzma2/ultra64
+LZMAUseSeparateProcess=yes
+LZMADictionarySize=262144
+LZMANumFastBytes=273
 SolidCompression=yes
 OutputDir=dist
 OutputBaseFilename=Genisys-Setup
@@ -39,11 +44,15 @@ Name: "startup"; Description: "Start Genisys when Windows starts"; GroupDescript
 Source: "{#Src}\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
 
 [Icons]
-Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"
-Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: desktopicon
+Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"; IconFilename: "{app}\resources\assets\icon.ico"
+Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; IconFilename: "{app}\resources\assets\icon.ico"; Tasks: desktopicon
 
 [Registry]
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "{#AppName}"; ValueData: """{app}\{#AppExe}"" --autostart"; Flags: uninsdeletevalue; Tasks: startup
+
+; A new stamp on every fresh install (not on updates): the app shows its first-run setup once per stamp.
+[INI]
+Filename: "{app}\install.ini"; Section: "install"; Key: "stamp"; String: "{code:InstallStamp}"; Check: IsFreshInstall
 
 [UninstallRun]
 Filename: "{sys}\taskkill.exe"; Parameters: "/im {#AppExe} /f"; Flags: runhidden; RunOnceId: "KillGenisys"
@@ -61,6 +70,16 @@ const
 var
   WipeData: Boolean;
   UpdateMode: Boolean;
+
+function InstallStamp(Param: String): String;
+begin
+  Result := GetDateTimeString('yyyymmddhhnnss', #0, #0);
+end;
+
+function IsFreshInstall: Boolean;
+begin
+  Result := not UpdateMode;
+end;
 
 // Compares dotted versions like 1.2.10 (up to 4 parts). Returns -1, 0 or 1.
 function NextPart(var S: String): Integer;
@@ -160,8 +179,8 @@ begin
   begin
     if Cmp = 0 then Msg := 'Version ' + Ver + ' is installed in ' + Dir + '.'
     else Msg := 'Version ' + Ver + ' is installed in ' + Dir + ' (this setup is the older version {#AppVersion}).';
-    R := TaskDialogMsgBox('Genisys is already installed.', Msg, mbInformation, MB_YESNOCANCEL,
-      ['Launch Genisys', 'Repair / Reinstall', 'Close'], 0);
+    // Keep the button list on this line: Inno reads any line that starts with "[" as a new section.
+    R := TaskDialogMsgBox('Genisys is already installed.', Msg, mbInformation, MB_YESNOCANCEL, ['Launch Genisys', 'Repair / Reinstall', 'Close'], 0);
     if R = IDYES then begin LaunchInstalled(Dir); Result := False; end
     else if R <> IDNO then Result := False;       // Close (or the window X); Repair / Reinstall falls through to the wizard
   end;
@@ -196,8 +215,8 @@ begin
   begin
     if WipeData then
       DelTree(ExpandConstant('{userappdata}\Executor'), True, True, True);
-    RegDeleteValueFromKey(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'Genisys');
-    RegDeleteValueFromKey(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'electron.app.Genisys');
+    RegDeleteValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'Genisys');
+    RegDeleteValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'electron.app.Genisys');
     if not UninstallSilent then
       if MsgBox('Genisys is uninstalled. Sorry to see you go.' + #13#10 + #13#10 +
         'Want to tell us what went wrong or what was missing? It takes a minute and opens an email draft.',

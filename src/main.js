@@ -14,13 +14,14 @@ import { PathIndex } from './fast/index.js';
 import { checkScript, isInside } from './fast/safety.js';
 import { hashScript } from './fast/scriptFallback.js';
 import { parseLog, formatStats } from './fast/stats.js';
+import * as cloud from './cloud.js';
 
 // Diagnostics: if the app ever exits on its own, say who asked for it and why (also saved to %TEMP%\genisys-debug.log).
 const dlog = (...a) => { const line = `[${new Date().toISOString()}] ${a.join(' ')}`; console.log('[genisys]', line); try { fs.appendFileSync(path.join(os.tmpdir(), 'genisys-debug.log'), line + '\n'); } catch {} };
-process.on('uncaughtException', (e) => dlog('uncaughtException', e?.stack || e));
-process.on('unhandledRejection', (e) => dlog('unhandledRejection', e?.stack || e));
-app.on('render-process-gone', (_e, wc, d) => dlog('render-process-gone', d.reason, d.exitCode));
-app.on('child-process-gone', (_e, d) => dlog('child-process-gone', d.type, d.reason, d.exitCode));
+process.on('uncaughtException', (e) => { dlog('uncaughtException', e?.stack || e); cloud.reportError('crash', e); });
+process.on('unhandledRejection', (e) => { dlog('unhandledRejection', e?.stack || e); cloud.reportError('crash', e); });
+app.on('render-process-gone', (_e, wc, d) => { dlog('render-process-gone', d.reason, d.exitCode); if (d.reason !== 'clean-exit') cloud.reportError('crash', `window process gone: ${d.reason} (${d.exitCode})`); });
+app.on('child-process-gone', (_e, d) => { dlog('child-process-gone', d.type, d.reason, d.exitCode); if (d.reason !== 'clean-exit') cloud.reportError('crash', `${d.type} process gone: ${d.reason} (${d.exitCode})`); });
 const realQuit = app.quit.bind(app);
 app.quit = () => { dlog('app.quit called from', new Error().stack.split('\n').slice(2, 5).join(' | ')); realQuit(); };
 dlog('starting; started =', started, '; packaged =', app.isPackaged);
@@ -75,6 +76,7 @@ function notify(kind, text) {
     return;
   }
   db.addNote(kind, text);
+  if (kind === 'problem') cloud.reportError('problem', text);
   mainWin?.webContents.send('notes-changed');
 }
 
@@ -140,6 +142,14 @@ function syncBats() {
 }
 ipcMain.on('openBats', () => { fs.mkdirSync(batsDir(), { recursive: true }); shell.openPath(batsDir()); });
 ipcMain.handle('notify', (_e, kind, text) => notify(kind, text));
+// First-run setup, Report tab and renderer errors -> the website backend (see cloud.js).
+ipcMain.handle('cloud', (_e, op, data) => {
+  if (op === 'state') return cloud.state();
+  if (op === 'register') return cloud.register(data || {});
+  if (op === 'report') return cloud.sendReport(data || {});
+  throw new Error(`unknown cloud op ${op}`);
+});
+ipcMain.on('reportError', (_e, kind, message, stack) => cloud.reportError(kind === 'renderer' ? 'renderer' : 'error', { message, stack }));
 ipcMain.handle('checkUpdates', async () => { await checkModels(true); checkCode(); });
 const setAutostart = (on) => { if (app.isPackaged) app.setLoginItemSettings({ openAtLogin: on, path: process.execPath, args: ['--autostart'] }); };
 ipcMain.handle('autostart', (_e, on) => { db.setSetting('autostart', on); setAutostart(on); return app.isPackaged; });
@@ -1072,6 +1082,7 @@ app.whenReady().then(() => {
   // Login launch starts hidden-to-taskbar (minimized) instead of popping up.
   if (process.argv.includes('--autostart')) mainWin.once('ready-to-show', () => { mainWin.showInactive(); mainWin.minimize(); });
   setTimeout(() => { checkModels(); checkCode(); }, 8000);
+  setTimeout(() => cloud.flushPending(), 5000);
   setInterval(() => checkModels(), 6 * 3600e3);
   mainWin.on('closed', () => { mainWin = null; app.quit(); }); // closing the launcher closes every agent
   // System-wide hotkeys (work from any app while Genisys runs); keep in sync with the F1 help panel.
@@ -1084,6 +1095,6 @@ app.whenReady().then(() => {
   globalShortcut.register('Control+Alt+S', () => openAgent('script'));
   setTimeout(() => startIndex(), 15000); // low-priority background scan, 15 s after start
   dlog('main window created');
-}).catch((e) => dlog('startup failed', e?.stack || e));
+}).catch((e) => { dlog('startup failed', e?.stack || e); cloud.reportError('crash', e); });
 app.on('will-quit', () => globalShortcut.unregisterAll());
 app.on('window-all-closed', () => app.quit());

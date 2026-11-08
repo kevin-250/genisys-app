@@ -163,8 +163,10 @@ addEventListener('anim-change', syncDots);
 const sysDark = matchMedia('(prefers-color-scheme: dark)');
 const store = mode === 'main' ? localStorage : sessionStorage;
 const readTheme = () => { try { return store.getItem('theme') || (mode === 'main' ? null : localStorage.getItem('theme')); } catch { return null; } };
+// Saved choice: 'light' (the default), 'dark' or 'system' (follows Windows; picked in the first-run setup).
 function applyTheme() {
-  document.documentElement.dataset.theme = readTheme() || (sysDark.matches ? 'dark' : 'light');
+  const t = readTheme() || 'light';
+  document.documentElement.dataset.theme = t === 'system' ? (sysDark.matches ? 'dark' : 'light') : t;
 }
 $('theme').onclick = () => {
   const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
@@ -173,6 +175,12 @@ $('theme').onclick = () => {
 };
 sysDark.addEventListener('change', applyTheme);
 applyTheme();
+
+// Errors in this window go to the developer too (only if the user allowed error reports in setup).
+addEventListener('error', (e) => window.api.reportError('renderer', e.message, e.error?.stack));
+addEventListener('unhandledrejection', (e) => window.api.reportError('renderer', String(e.reason?.message ?? e.reason), e.reason?.stack));
+// First launch: the setup (account, name, theme, a few questions) covers the main window until it is done.
+if (mode === 'main') window.api.cloud('state').then((s) => { if (!s.onboarded) import('./onboarding.js').then((m) => m.startOnboarding()); });
 
 // macOS-style centered title: "genisys — agent-3 — 520x330". The name is editable (click it).
 let winName = mode === 'main' ? 'main' : (q.get('title') || mode).replace('~/', '');

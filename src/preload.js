@@ -11,6 +11,8 @@ contextBridge.exposeInMainWorld('api', {
   theme: (t) => ipcRenderer.send('theme', t),
   db: (op, ...args) => ipcRenderer.invoke('db', op, ...args),
   notify: (kind, text) => ipcRenderer.invoke('notify', kind, text),
+  cloud: (op, data) => ipcRenderer.invoke('cloud', op, data), // first-run setup + Report tab (website backend)
+  reportError: (kind, message, stack) => ipcRenderer.send('reportError', kind, message, stack),
   checkUpdates: () => ipcRenderer.invoke('checkUpdates'),
   autostart: (on) => ipcRenderer.invoke('autostart', on),
   onNav: (cb) => ipcRenderer.on('nav', (_e, tab) => cb(tab)),

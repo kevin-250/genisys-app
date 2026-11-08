@@ -148,6 +148,7 @@ async function settingsTab(root) {
     </section>
     <section class="sg"><h3>App</h3>
       <div class="srow"><div><b>Start with Windows</b><span>Opens Genisys quietly when you sign in. <em id="as-note"></em></span></div><label class="tg"><input type="checkbox" name="autostart"><i></i></label></div>
+      <div class="srow"><div><b>Send error reports</b><span>When something breaks, the error message and app version go to the developer. Your user folder and name are removed first.</span></div><label class="tg"><input type="checkbox" name="sendErrors"><i></i></label></div>
     </section>
     <div class="savebar"><button class="btn primary">Save settings</button> <span id="saved" class="muted"></span></div>`;
   f.querySelectorAll('[data-anim]').forEach((c) => {
@@ -187,6 +188,7 @@ async function settingsTab(root) {
   f.emoji.checked = P.emoji;
   f.custom.value = P.custom;
   f.autostart.checked = autostart;
+  f.sendErrors.checked = await window.api.db('getSetting', 'sendErrors', false);
   f.speed.checked = (await window.api.db('getSetting', 'speedMode', 'old')) === 'new';
   const paintSpeed = async () => {
     const n = await window.api.db('cacheCount');
@@ -220,6 +222,7 @@ async function settingsTab(root) {
       deep: f.deep.checked, maxSteps: Math.max(3, Math.min(50, Number(f.maxSteps.value) || 20)),
     });
     await window.api.db('setSetting', 'speedMode', f.speed.checked ? 'new' : 'old');
+    await window.api.db('setSetting', 'sendErrors', f.sendErrors.checked);
     const packaged = await window.api.autostart(f.autostart.checked);
     $('as-note').textContent = packaged ? '' : 'Applies in the installed app only.';
     $('saved').textContent = 'saved ✓ applies to the next task in every window';
@@ -328,7 +331,45 @@ async function modelPicker(f) {
   draw();
 }
 
-const TABS = { settings: settingsTab, keys: keysTab, memory: memoryTab, about: aboutTab, notes: notesTab };
+// Report: a message to the developer (idea, bug, question), sent to the website backend through the main process.
+async function reportTab(root) {
+  const { account } = await window.api.cloud('state');
+  const f = el('form', 'report');
+  f.innerHTML = `
+    <p class="desc">Tell the developer what to improve, what broke, or what you wish Genisys could do. Every message gets read.</p>
+    <div class="seg" role="radiogroup" aria-label="Kind of message">
+      ${[['idea', 'Idea'], ['bug', 'Bug'], ['question', 'Question'], ['other', 'Other']].map(([v, l], i) =>
+        `<label><input type="radio" name="type" value="${v}" ${i ? '' : 'checked'}><span>${l}</span></label>`).join('')}
+    </div>
+    <textarea name="message" class="edit" rows="7" maxlength="2000" placeholder="e.g. It would be great if /agent could also…" aria-label="Your message"></textarea>
+    <div class="report-foot">
+      ${account?.email ? '<label class="check"><input type="checkbox" name="includeEmail" checked> <span></span></label>' : '<span></span>'}
+      <span class="muted" data-count>0 / 2000</span>
+    </div>
+    <div class="report-foot"><span class="muted" data-status role="status"></span><button class="btn primary" type="submit">Send</button></div>`;
+  if (account?.email) f.querySelector('.check span').textContent = `include my email (${account.email}) so I can get a reply`;
+  const msg = f.message, status = f.querySelector('[data-status]'), count = f.querySelector('[data-count]');
+  const upd = () => { count.textContent = `${msg.value.length} / 2000`; try { sessionStorage.setItem('reportDraft', msg.value); } catch {} };
+  try { msg.value = sessionStorage.getItem('reportDraft') || ''; } catch {}
+  msg.oninput = upd; upd();
+  f.onsubmit = async (e) => {
+    e.preventDefault();
+    if (!msg.value.trim()) { status.textContent = 'Write something first.'; msg.focus(); return; }
+    const send = f.querySelector('button[type=submit]');
+    send.disabled = true; status.textContent = 'Sending…';
+    try {
+      await window.api.cloud('report', { type: f.type.value, message: msg.value.trim(), includeEmail: !!f.includeEmail?.checked });
+      msg.value = ''; upd(); status.textContent = 'Sent. Thank you!';
+    } catch {
+      status.textContent = "Couldn't send. Check your internet and try again (your message is kept).";
+    }
+    send.disabled = false;
+  };
+  root.append(f);
+  msg.focus();
+}
+
+const TABS = { settings: settingsTab, keys: keysTab, memory: memoryTab, about: aboutTab, notes: notesTab, report: reportTab };
 // Opens the settings panel on a page; "close" (or unknown) hides it.
 export async function render(name) {
   const open = !!TABS[name];
