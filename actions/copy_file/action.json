@@ -1,0 +1,24 @@
+{
+  "name": "copy_file",
+  "description": "Copy a file to a new path (never overwrites).",
+  "triggers": [
+    "copy",
+    "duplicate",
+    "backup"
+  ],
+  "params": {
+    "from": {
+      "type": "path",
+      "required": true
+    },
+    "to": {
+      "type": "path",
+      "required": true
+    }
+  },
+  "destructive": false,
+  "needs_ai": false,
+  "paths": [],
+  "restrictPaths": true,
+  "native": "copy_file"
+}

@@ -1,0 +1,23 @@
+{
+  "name": "list_files",
+  "description": "List the files inside a folder.",
+  "triggers": [
+    "list",
+    "files",
+    "folder",
+    "contents",
+    "ls",
+    "dir"
+  ],
+  "params": {
+    "path": {
+      "type": "path",
+      "required": true
+    }
+  },
+  "destructive": false,
+  "needs_ai": false,
+  "paths": [],
+  "restrictPaths": true,
+  "native": "list_files"
+}

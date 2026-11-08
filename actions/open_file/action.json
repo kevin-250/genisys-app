@@ -1,0 +1,37 @@
+{
+  "name": "open_file",
+  "description": "Find a file or movie/song/document by name and open it with its default program.",
+  "triggers": [
+    "open",
+    "play",
+    "movie",
+    "film",
+    "song",
+    "video",
+    "file",
+    "document",
+    "pdf"
+  ],
+  "params": {
+    "query": {
+      "type": "string",
+      "required": true
+    },
+    "ext": {
+      "type": "string",
+      "required": false
+    },
+    "media": {
+      "type": "enum",
+      "values": [
+        "true",
+        "false"
+      ],
+      "required": false
+    }
+  },
+  "destructive": false,
+  "needs_ai": false,
+  "paths": [],
+  "native": "open_file"
+}

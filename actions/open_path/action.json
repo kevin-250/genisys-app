@@ -1,0 +1,16 @@
+{
+  "name": "open_path",
+  "description": "Open an exact path that is already known (used by buttons and the cache).",
+  "triggers": [],
+  "params": {
+    "path": {
+      "type": "path",
+      "required": true
+    }
+  },
+  "destructive": false,
+  "needs_ai": false,
+  "paths": [],
+  "internal": true,
+  "native": "open_path"
+}

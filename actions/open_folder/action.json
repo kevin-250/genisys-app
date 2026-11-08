@@ -1,0 +1,35 @@
+{
+  "name": "open_folder",
+  "description": "Open a known folder (downloads, documents, desktop, pictures, videos, music, home) or a folder found by name.",
+  "triggers": [
+    "open",
+    "folder",
+    "directory",
+    "downloads",
+    "documents",
+    "desktop"
+  ],
+  "params": {
+    "folder": {
+      "type": "enum",
+      "values": [
+        "downloads",
+        "documents",
+        "desktop",
+        "pictures",
+        "videos",
+        "music",
+        "home"
+      ],
+      "required": false
+    },
+    "name": {
+      "type": "string",
+      "required": false
+    }
+  },
+  "destructive": false,
+  "needs_ai": false,
+  "paths": [],
+  "native": "open_folder"
+}

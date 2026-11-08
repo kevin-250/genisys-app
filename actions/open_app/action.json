@@ -1,0 +1,20 @@
+{
+  "name": "open_app",
+  "description": "Open an installed program by name (chrome, spotify, calculator, notepad).",
+  "triggers": [
+    "open",
+    "launch",
+    "start",
+    "run"
+  ],
+  "params": {
+    "name": {
+      "type": "string",
+      "required": true
+    }
+  },
+  "destructive": false,
+  "needs_ai": false,
+  "paths": [],
+  "native": "open_app"
+}

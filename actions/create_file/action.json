@@ -1,0 +1,28 @@
+{
+  "name": "create_file",
+  "description": "Create a new text file with content (never overwrites).",
+  "triggers": [
+    "create",
+    "make",
+    "new",
+    "file",
+    "write",
+    "text",
+    "txt"
+  ],
+  "params": {
+    "path": {
+      "type": "path",
+      "required": true
+    },
+    "content": {
+      "type": "string",
+      "required": false
+    }
+  },
+  "destructive": false,
+  "needs_ai": false,
+  "paths": [],
+  "restrictPaths": true,
+  "native": "create_file"
+}

@@ -1,0 +1,32 @@
+{
+  "name": "open_url",
+  "description": "Open a web address in the default browser, or in a named browser.",
+  "triggers": [
+    "open",
+    "go",
+    "visit",
+    "website",
+    "link"
+  ],
+  "params": {
+    "url": {
+      "type": "url",
+      "required": true
+    },
+    "browser": {
+      "type": "enum",
+      "values": [
+        "chrome",
+        "edge",
+        "firefox",
+        "brave",
+        "opera"
+      ],
+      "required": false
+    }
+  },
+  "destructive": false,
+  "needs_ai": false,
+  "paths": [],
+  "native": "open_url"
+}

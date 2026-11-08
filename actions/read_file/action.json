@@ -1,0 +1,22 @@
+{
+  "name": "read_file",
+  "description": "Show the text content of a file.",
+  "triggers": [
+    "read",
+    "show",
+    "content",
+    "cat",
+    "view"
+  ],
+  "params": {
+    "path": {
+      "type": "path",
+      "required": true
+    }
+  },
+  "destructive": false,
+  "needs_ai": false,
+  "paths": [],
+  "restrictPaths": true,
+  "native": "read_file"
+}
