@@ -29,6 +29,16 @@ function main() {
   const [bump, notes] = args.filter((a) => a !== '--dry');
   const fail = (msg) => { console.error(`\n✗ ${msg}`); process.exit(1); };
   const run = (cmd, a, opts = {}) => execFileSync(cmd, a, { cwd: root, stdio: 'inherit', ...opts });
+  // Network steps retry: GitHub connections drop now and then (ECONNRESET, upload timeouts).
+  const retry = (what, fn) => {
+    for (let i = 1; ; i++) {
+      try { return fn(); } catch (e) {
+        if (i === 5) fail(`${what} failed 5 times. The installer is built; when your internet is back, finish with:\n  git push && git push origin ${tag}\n  gh release upload ${tag} installer\\dist\\${ASSET} --repo ${REPO} --clobber   (or gh release create if it does not exist yet)`);
+        console.log(`  ${what} failed (attempt ${i}/5), retrying in 10 s…`);
+        execFileSync(process.execPath, ['-e', 'setTimeout(()=>{},10000)']);
+      }
+    }
+  };
   const out = (cmd, a) => execFileSync(cmd, a, { cwd: root, encoding: 'utf8' }).trim();
 
   // gh may not be on PATH in a shell opened before it was installed.
@@ -70,11 +80,17 @@ function main() {
   run('git', ['add', 'package.json', 'package-lock.json', 'installer/genisys.iss']);
   run('git', ['commit', '-m', `Release ${tag}`]);
   run('git', ['tag', tag]);
-  run('git', ['push']);
-  run('git', ['push', 'origin', tag]);
+  retry('git push', () => run('git', ['push']));
+  retry('Pushing the tag', () => run('git', ['push', 'origin', tag]));
 
   // 4) Publish the GitHub Release with the installer attached.
-  run(ghPath, ['release', 'create', tag, exe, '--repo', REPO, '--title', `Genisys ${tag}`, ...(notes ? ['--notes', notes] : ['--generate-notes'])]);
+  // A failed upload can leave the release without its file, so later attempts re-upload into the existing release.
+  retry('Publishing the release', () => {
+    let exists = true;
+    try { out(ghPath, ['release', 'view', tag, '--repo', REPO]); } catch { exists = false; }
+    if (exists) run(ghPath, ['release', 'upload', tag, exe, '--repo', REPO, '--clobber']);
+    else run(ghPath, ['release', 'create', tag, exe, '--repo', REPO, '--title', `Genisys ${tag}`, ...(notes ? ['--notes', notes] : ['--generate-notes'])]);
+  });
   console.log(`\n✓ Released ${tag}: https://github.com/${REPO}/releases/tag/${tag}`);
   console.log(`  Always-latest download link: https://github.com/${REPO}/releases/latest/download/${ASSET}`);
 }

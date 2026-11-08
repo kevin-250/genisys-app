@@ -26,7 +26,6 @@ SetupIconFile=..\assets\icon.ico
 UninstallDisplayIcon={app}\resources\assets\icon.ico
 ; Strongest LZMA2 settings (256 MB dictionary, needs ~3 GB RAM while compiling): ~10 MB smaller than lzma2/max.
 Compression=lzma2/ultra64
-LZMAUseSeparateProcess=yes
 LZMADictionarySize=262144
 LZMANumFastBytes=273
 SolidCompression=yes
