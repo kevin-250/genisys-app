@@ -3,6 +3,7 @@ import { contextBridge, ipcRenderer } from 'electron';
 contextBridge.exposeInMainWorld('api', {
   pageReady: () => ipcRenderer.send('pageReady'),
   win: (action) => ipcRenderer.send('win', action),
+  quit: () => ipcRenderer.send('quit'),
   open: (kind, task, opts) => ipcRenderer.send('open', kind, task, opts),
   openMany: (specs) => ipcRenderer.send('openMany', specs),
   agentDone: (info) => ipcRenderer.send('agentDone', info),

@@ -451,6 +451,7 @@ ipcMain.handle('write', (_e, file, content, force) => {
   return { full };
 });
 
+ipcMain.on('quit', () => app.quit()); // power button: Genisys fully off, nothing left running
 ipcMain.on('win', (e, action) => {
   const w = BrowserWindow.fromWebContents(e.sender);
   if (action === 'close') w.close();
@@ -1089,7 +1090,7 @@ app.whenReady().then(() => {
     mainWin.hide();
     if (!db.getSetting('trayTipShown', false) && Notification.isSupported()) {
       db.setSetting('trayTipShown', true);
-      new Notification({ title: 'Genisys is still running', body: `Press Alt+Space for the command bar or ${openKey} to open Genisys. To quit, right-click its icon near the clock.`, icon: path.join(ASSETS, 'icon.png') }).show();
+      new Notification({ title: 'Genisys is still running', body: 'Press Alt+Space for the command bar or Ctrl+Alt+G to open Genisys. To turn it off completely, use the power button or right-click its icon near the clock.', icon: path.join(ASSETS, 'icon.png') }).show();
     }
   });
   mainWin.on('session-end', () => { quitting = true; }); // Windows is shutting down: let it close
@@ -1097,9 +1098,8 @@ app.whenReady().then(() => {
   // System-wide hotkeys (work from any app while Genisys runs); keep in sync with the F1 help panel.
   // Another app can already own a key combo; log it so a 'hotkey does nothing' report can be checked in genisys-debug.log.
   const hotkey = (keys, fn) => { const ok = globalShortcut.register(keys, fn); dlog('hotkey', keys, ok ? 'registered' : 'TAKEN by another app'); return ok; };
-  if (!hotkey('Control+Alt+Space', showMain)) { // e.g. taken by another app on some PCs
-    if (hotkey('Control+Alt+G', showMain)) { openKey = 'Ctrl+Alt+G'; notify('problem', 'Ctrl+Alt+Space is taken by another app, so opening Genisys uses Ctrl+Alt+G.'); }
-  }
+  // Ctrl+Alt+G (G for Genisys) opens the main window. Not Ctrl+Alt+Space: other apps (e.g. Claude) use that one.
+  if (!hotkey('Control+Alt+G', showMain)) notify('problem', 'Ctrl+Alt+G is taken by another app. Open Genisys from its icon near the clock instead.');
   // Alt+Space is often taken (Windows window menu, PowerToys Run): fall back to Alt+Shift+Space.
   if (!hotkey('Alt+Space', toggleRunner)) {
     if (hotkey('Alt+Shift+Space', toggleRunner)) notify('problem', 'Alt+Space is taken by another app, so the runner uses Alt+Shift+Space.');
@@ -1110,7 +1110,7 @@ app.whenReady().then(() => {
   tray = new Tray(path.join(ASSETS, 'icon.ico'));
   tray.setToolTip('Genisys');
   tray.setContextMenu(Menu.buildFromTemplate([
-    { label: `Open Genisys (${openKey})`, click: showMain },
+    { label: 'Open Genisys (Ctrl+Alt+G)', click: showMain },
     { label: 'Command bar (Alt+Space)', click: () => toggleRunner() },
     { label: 'New agent (Ctrl+Alt+N)', click: () => openAgent('agent') },
     { type: 'separator' },
@@ -1120,7 +1120,7 @@ app.whenReady().then(() => {
   setTimeout(() => startIndex(), 15000); // low-priority background scan, 15 s after start
   dlog('main window created');
 }).catch((e) => { dlog('startup failed', e?.stack || e); cloud.reportError('crash', e); });
-let quitting = false, tray = null, openKey = 'Ctrl+Alt+Space'; // tray: kept in a variable so it is not garbage-collected (the icon would vanish)
+let quitting = false, tray = null; // tray: kept in a variable so it is not garbage-collected (the icon would vanish)
 app.on('before-quit', () => { quitting = true; });
 app.on('will-quit', () => globalShortcut.unregisterAll());
 app.on('window-all-closed', () => app.quit());

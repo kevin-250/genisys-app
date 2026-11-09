@@ -168,6 +168,7 @@ function applyTheme() {
   const t = readTheme() || 'light';
   document.documentElement.dataset.theme = t === 'system' ? (sysDark.matches ? 'dark' : 'light') : t;
 }
+$('quit').onclick = () => window.api.quit(); // closing a window only hides Genisys; this turns it off
 $('theme').onclick = () => {
   const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
   try { store.setItem('theme', next); } catch {}
