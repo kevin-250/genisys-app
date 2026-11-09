@@ -112,6 +112,12 @@ export function parseSystem(text) {
     if ((id === 'volume' || id === 'brightness') && p.value > 100) return null;
     return p;
   }
+  // Questions about this PC: "how much battery do I have", "check my free space", "whats my ip", "ram usage"
+  const q = t.replace(/^(?:how\s+much|what\s+is|whats|check|show(?:\s+me)?|tell\s+me|see)\s+/, '').replace(/^(?:my|the)\s+/, '')
+    .replace(/\s+(?:do\s+i\s+have|is\s+left|left|now|right\s+now|usage|use|level|status|percentage|on\s+(?:this|my)\s+(?:pc|computer|laptop))$/, '').trim();
+  const INFO = [[/^(?:battery|charge)$/, 'battery'], [/^(?:free\s+)?(?:disk\s+)?(?:space|storage|disk)$/, 'disk_space'], [/^(?:ram|memory)$/, 'memory'],
+    [/^(?:cpu|processor)$/, 'cpu'], [/^ip(?:\s+address)?$/, 'ip_address'], [/^wi-?\s?fi(?:\s+name)?$/, 'wifi_name'], [/^(?:windows\s+version|version\s+of\s+windows)$/, 'windows_version']];
+  for (const [re, id] of INFO) if (re.test(q)) return { do: id };
   return null;
 }
 

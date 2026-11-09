@@ -77,3 +77,13 @@ test('folder map only for file tasks, and it stays small', () => {
   assert.match(map, /\(\+\d+ more\)/);
   assert.ok(!map.includes('a.txt'), 'files are never listed');
 });
+
+test('natural questions about the PC are answered without AI', () => {
+  const ask = (t) => parseIntent(t);
+  for (const [t, id] of [['how much battery do I have', 'battery'], ['check my battery', 'battery'], ['how much free space do I have', 'disk_space'],
+    ["what's my ip", 'ip_address'], ['what is my ram usage', 'memory'], ['show me cpu usage', 'cpu']]) {
+    const r = ask(t);
+    assert.equal(r.action, 'pc', `${t} -> ${JSON.stringify(r)}`); assert.equal(r.params.do, id, t);
+  }
+  assert.notEqual(ask('how much is a flight to paris').action, 'pc');
+});
