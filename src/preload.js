@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld('api', {
   cloud: (op, data) => ipcRenderer.invoke('cloud', op, data), // first-run setup + Report tab (website backend)
   reportError: (kind, message, stack) => ipcRenderer.send('reportError', kind, message, stack),
   checkUpdates: () => ipcRenderer.invoke('checkUpdates'),
+  installUpdate: () => ipcRenderer.invoke('installUpdate'),
   autostart: (on) => ipcRenderer.invoke('autostart', on),
   onNav: (cb) => ipcRenderer.on('nav', (_e, tab) => cb(tab)),
   nav: (tab) => ipcRenderer.send('nav', tab),

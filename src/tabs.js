@@ -83,7 +83,7 @@ async function aboutTab(root) {
 }
 
 async function notesTab(root) {
-  const notes = await window.api.db('listNotes');
+  const notes = (await window.api.db('listNotes')).filter((n) => n.kind !== 'code'); // old developer-only notes
   const list = el('div', 'items');
   for (const n of notes) {
     const row = el('div', `item note${n.seen ? '' : ' unseen'}`);
@@ -92,9 +92,25 @@ async function notesTab(root) {
     row.append(b, t, el('span', 'muted', ago(n.ts)), btn('✕', async () => { await window.api.db('deleteNote', n.id); render('notes'); }, 'btn x'));
     list.append(row);
   }
-  if (!notes.length) list.append(el('div', 'empty', 'No notes. Problems, new free models, ideas and code changes show up here (and as Windows notifications).'));
+  if (!notes.length) list.append(el('div', 'empty', 'No notes. New versions, problems, new free models and ideas show up here.'));
   const bar = el('div', 'stats');
-  bar.append(btn('check for updates now', async (e) => { e.target.textContent = 'checking…'; await window.api.checkUpdates(); render('notes'); }));
+  const upd = el('span', 'muted');
+  const install = btn('Download and install', async () => {
+    install.disabled = true; install.textContent = 'downloading…';
+    upd.textContent = 'Genisys will close, update and open again by itself.';
+    try { await window.api.installUpdate(); } catch { install.disabled = false; install.textContent = 'Download and install'; upd.textContent = "Couldn't download the update. Check your internet and try again."; }
+  });
+  install.hidden = true;
+  bar.append(btn('Check for updates', async (e) => {
+    e.target.disabled = true; e.target.textContent = 'checking…'; upd.textContent = ''; install.hidden = true;
+    try {
+      const r = await window.api.checkUpdates();
+      if (r.dev) upd.textContent = 'Updates work in the installed app.';
+      else if (r.newer) { upd.textContent = `Version ${r.latest} is available (you have ${r.current}).`; install.hidden = false; }
+      else upd.textContent = `You have the latest version (${r.current}).`;
+    } catch { upd.textContent = "Couldn't reach the update server. Check your internet and try again."; }
+    e.target.disabled = false; e.target.textContent = 'Check for updates';
+  }), upd, install);
   root.append(bar, section(`notes · ${notes.length}`, list));
   await window.api.db('markNotesSeen');
   refreshCount();

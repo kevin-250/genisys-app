@@ -103,24 +103,6 @@ async function checkModels(force) {
   } catch {} // offline: try again next time
 }
 
-// Packaged app only: project source newer than this build → remind to rebuild.
-function checkCode() {
-  if (!app.isPackaged) return;
-  let newest = 0;
-  const walk = (p) => {
-    try {
-      const st = fs.statSync(p);
-      if (st.isDirectory()) fs.readdirSync(p).forEach((f) => walk(path.join(p, f)));
-      else newest = Math.max(newest, st.mtimeMs);
-    } catch {}
-  };
-  ['src', 'index.html', 'assets'].forEach((f) => walk(path.join(__PROJECT_DIR__, f)));
-  if (newest > __BUILD_TIME__ + 60e3 && db.getSetting('codeNotified', 0) < newest) {
-    db.setSetting('codeNotified', newest);
-    notify('code', 'Your app source changed since this build. Run "npm run package" in my-app to update genisys.exe.');
-  }
-}
-
 // Renderer → database, through an allow-list (no raw SQL from the page).
 const DB_OPS = ['getSetting', 'setSetting', 'remember', 'findMemory', 'findExact', 'listMemory', 'updateMemory', 'deleteMemory', 'useMemory',
   'listProfile', 'addProfile', 'updateProfile', 'deleteProfile', 'logTask', 'todayStats', 'failsToday',
@@ -157,7 +139,9 @@ ipcMain.handle('cloud', (_e, op, data) => {
   throw new Error(`unknown cloud op ${op}`);
 });
 ipcMain.on('reportError', (_e, kind, message, stack) => cloud.reportError(kind === 'renderer' ? 'renderer' : 'error', { message, stack }));
-ipcMain.handle('checkUpdates', async () => { await checkModels(true); checkCode(); });
+// Notes › Check for updates: newest GitHub release vs this version; installUpdate downloads (if needed) and installs it now.
+ipcMain.handle('checkUpdates', async () => { checkModels(true); return updater ? updater.checkNow() : { current: app.getVersion(), latest: null, dev: true }; });
+ipcMain.handle('installUpdate', () => updater?.installNow());
 const setAutostart = (on) => { if (app.isPackaged) app.setLoginItemSettings({ openAtLogin: on, path: process.execPath, args: ['--autostart'] }); };
 ipcMain.handle('autostart', (_e, on) => { db.setSetting('autostart', on); setAutostart(on); return app.isPackaged; });
 
@@ -208,6 +192,7 @@ function providerList() {
   const c = readCfg();
   return providerDefs().map((p) => ({ ...p, keys: [...new Set([...(c.providerKeys?.[p.id] || []), p.env && process.env[p.env]].filter(Boolean))] })).filter((p) => p.keys.length);
 }
+let updater = null; // set once the app is ready (installed app only)
 const provRest = new Map(); // "provider:keyId" -> ms until which it is skipped (rate limit / bad key)
 async function callCompat(p, key, model, messages, { think, maxTokens, timeoutMs }) {
   const body = { model, messages, [p.tokensParam || 'max_completion_tokens']: maxTokens || (think ? 3000 : 1000), stream: false };
@@ -1149,7 +1134,7 @@ app.whenReady().then(() => {
   mainWin = createWindow({ mode: 'main' });
   // Login launch starts hidden-to-taskbar (minimized) instead of popping up.
   if (process.argv.includes('--autostart')) mainWin.once('ready-to-show', () => { mainWin.showInactive(); mainWin.minimize(); });
-  setTimeout(() => { checkModels(); checkCode(); }, 8000);
+  setTimeout(() => checkModels(), 8000);
   setTimeout(() => cloud.flushPending(), 5000);
   setInterval(() => checkModels(), 6 * 3600e3);
   // Closing the main window only hides it: Genisys keeps running in the tray so the hotkeys keep working.
@@ -1200,11 +1185,18 @@ app.whenReady().then(() => {
   }, 20000);
   setTimeout(() => helper.warm(), 10000); // so the first volume / PC control is instant
   // Automatic updates: installs only while no Genisys window is open on screen (Settings › Automatic updates).
-  startUpdater({
+  updater = startUpdater({
     log: dlog,
     enabled: () => db.getSetting('autoUpdate', true) !== false,
     isIdle: () => BrowserWindow.getAllWindows().every((w) => w.isDestroyed() || !w.isVisible()),
     report: (e) => cloud.reportError('error', e),
+    found: (v) => {
+      notify('update', `Genisys ${v} is available. It installs by itself when Genisys is closed, or install it now in Notes.`);
+      if (!Notification.isSupported()) return;
+      const n = new Notification({ title: `Genisys ${v} is available`, body: 'It installs by itself when Genisys is closed. Click to install it now.', icon: path.join(ASSETS, 'icon.png') });
+      n.on('click', () => { showMain(); mainWin.webContents.send('nav', 'notes'); });
+      n.show();
+    },
   });
   {
     const prev = db.getSetting('lastVersion', null);
