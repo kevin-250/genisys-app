@@ -1,4 +1,4 @@
-// Automatic updates (installed app only). Twice a day: is there a newer GitHub release? Then download the installer in
+// Automatic updates (installed app only). Every 5 minutes: is there a newer GitHub release? Then download the installer in
 // the background, check its SHA-256 against the one GitHub publishes, and install it silently while Genisys is idle.
 // The installer (/VERYSILENT) updates in place and starts Genisys again in the tray.
 import { app, net } from 'electron';
@@ -31,6 +31,14 @@ async function download(url, part, size, log) {
     await new Promise((r) => setTimeout(r, 15000 * attempt));
   }
   throw new Error('download kept failing');
+}
+
+/** What changed in a version: its GitHub release notes as plain text, or '' (offline, no notes). */
+export async function releaseNotes(version) {
+  try {
+    const res = await net.fetch(`https://api.github.com/repos/kevin-250/genisys-app/releases/tags/v${version}`, { headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'Genisys' } });
+    return res.ok ? String((await res.json()).body || '').replace(/[#*_`>]/g, '').replace(/\s+/g, ' ').trim().slice(0, 600) : '';
+  } catch { return ''; }
 }
 
 /** { log, enabled(): bool, isIdle(): bool, report(err), found(version) } -> { checkNow, installNow } */
@@ -75,8 +83,8 @@ export function startUpdater({ log, enabled, isIdle, report, found }) {
     setTimeout(() => app.quit(), 500); // the installer replaces the files, then starts Genisys again in the tray
   }
 
-  setTimeout(() => check(), 5 * 60e3);     // 5 min after start
-  setInterval(() => check(), 12 * 3600e3); // then twice a day
+  // Every 5 min (12 GitHub API calls an hour, under its 60/hour limit); a newer version downloads by itself.
+  setInterval(() => check(), 5 * 60e3);
   setInterval(tryInstall, 10 * 60e3);      // a downloaded update waits until Genisys is idle
 
   return {

@@ -19,7 +19,7 @@ import { createHelper } from './fast/helper.js';
 import { makeSystem } from './fast/system.js';
 import { isFileTask } from './fast/intent.js';
 import { FAST_CAP } from './fast/fit.js';
-import { startUpdater } from './updater.js';
+import { startUpdater, releaseNotes } from './updater.js';
 import { newer } from './version.js';
 
 // Diagnostics: if the app ever exits on its own, say who asked for it and why (also saved to %TEMP%\genisys-debug.log).
@@ -147,7 +147,7 @@ ipcMain.handle('autostart', (_e, on) => { db.setSetting('autostart', on); setAut
 
 ipcMain.handle('config', () => {
   const { keys, models } = loadConfig();
-  return { dev: !app.isPackaged,  model: models[0], models, hasKey: keys.length > 0, keyCount: keys.length, path: cfgPath() };
+  return { dev: !app.isPackaged, version: app.getVersion(), model: models[0], models, hasKey: keys.length > 0, keyCount: keys.length, path: cfgPath() };
 });
 
 // Settings → keys. The page only ever sees masked keys.
@@ -1199,9 +1199,13 @@ app.whenReady().then(() => {
     },
   });
   {
-    const prev = db.getSetting('lastVersion', null);
-    if (prev && newer(app.getVersion(), prev) && Notification.isSupported()) new Notification({ title: `Genisys updated to v${app.getVersion()}`, body: 'New version installed. Everything you saved is still here.', icon: path.join(ASSETS, 'icon.png') }).show();
-    db.setSetting('lastVersion', app.getVersion());
+    const prev = db.getSetting('lastVersion', null), v = app.getVersion();
+    db.setSetting('lastVersion', v);
+    // Just updated: say what changed (the release notes from GitHub), as a notification and in Notes.
+    if (prev && newer(v, prev)) releaseNotes(v).then((what) => {
+      notify('update', `Updated to ${v}. ${what || 'Everything you saved is still here.'}`);
+      if (Notification.isSupported()) new Notification({ title: `Genisys updated to ${v}`, body: (what || 'New version installed. Everything you saved is still here.').slice(0, 200), icon: path.join(ASSETS, 'icon.png') }).show();
+    });
   }
   dlog('main window created');
 }).catch((e) => { dlog('startup failed', e?.stack || e); cloud.reportError('crash', e); });

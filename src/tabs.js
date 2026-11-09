@@ -163,8 +163,9 @@ async function settingsTab(root) {
       <pre class="desc" id="speed-stats" style="white-space:pre-wrap;font-size:12px;max-height:280px;overflow:auto;margin-top:10px"></pre>
     </section>
     <section class="sg"><h3>App</h3>
+      <div class="srow"><div><b>Version</b><span>Genisys ${cfg.version}. New versions and what changed show up in Notes.</span></div></div>
       <div class="srow"><div><b>Start with Windows</b><span>Opens Genisys quietly when you sign in. <em id="as-note"></em></span></div><label class="tg"><input type="checkbox" name="autostart"><i></i></label></div>
-      <div class="srow"><div><b>Automatic updates</b><span>Genisys checks twice a day and installs new versions by itself, while you are not using it.</span></div><label class="tg"><input type="checkbox" name="autoUpdate"><i></i></label></div>
+      <div class="srow"><div><b>Automatic updates</b><span>Genisys checks every few minutes, downloads new versions by itself and installs them while you are not using it.</span></div><label class="tg"><input type="checkbox" name="autoUpdate"><i></i></label></div>
       <div class="srow"><div><b>Send error reports</b><span>When something breaks, the error message and app version go to the developer. Your user folder and name are removed first.</span></div><label class="tg"><input type="checkbox" name="sendErrors"><i></i></label></div>
     </section>
     <div class="savebar"><button class="btn primary">Save settings</button> <span id="saved" class="muted"></span></div>`;
