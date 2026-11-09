@@ -33,9 +33,9 @@ function render(st) {
     let r = rows[n];
     if (!r) {
       const li = document.createElement('li');
-      li.innerHTML = '<div class="tg"><i class="ic"></i><span class="tt"></span><span class="tn"></span><i class="chev"></i></div><div class="tk"><ul></ul></div>';
+      li.innerHTML = '<div class="td-row"><i class="ic"></i><span class="tt"></span><span class="tn"></span></div><div class="td-kids"><ul></ul></div>';
       li.style.animationDelay = `${n * 40}ms`;
-      li.querySelector('.tg').onclick = () => { const o = !li.classList.contains('open'); userOpen.set(n, o); li.classList.toggle('open', o); };
+      li.querySelector('.td-row').onclick = () => { const o = !li.classList.contains('open'); userOpen.set(n, o); li.classList.toggle('open', o); };
       ul.append(li);
       r = rows[n] = { li, ul: li.querySelector('ul'), kids: [] };
     }
@@ -54,6 +54,7 @@ function render(st) {
   const foot = $('.td-foot');
   foot.className = `td-foot ${st.finished ? (st.stopped ? 'stopped' : 'ok') : 'run'}`;
   foot.textContent = st.finished ? (st.stopped ? 'Stopped' : st.failed ? 'Finished with problems' : 'All done') : 'Working…';
+  requestAnimationFrame(() => window.api.todoSize(Math.ceil($('.td').scrollHeight) + 16)); // window fits the card: no scrollbar, no empty space
 }
 window.api.onTodo((st) => render(st));
 window.api.todoInit().then(render);

@@ -45,6 +45,7 @@ contextBridge.exposeInMainWorld('api', {
   todoInit: () => ipcRenderer.invoke('todoInit'),
   onTodo: (cb) => ipcRenderer.on('todo-state', (_e, st) => cb(st)),
   todoClose: () => ipcRenderer.send('todoClose'),
+  todoSize: (h) => ipcRenderer.send('todoSize', h),
   winBounds: () => ipcRenderer.invoke('winBounds'),
   setWinBounds: (b) => ipcRenderer.send('setWinBounds', b),
   onMaxed: (cb) => ipcRenderer.on('maxed', (_e, v) => cb(v)),

@@ -970,7 +970,7 @@ ipcMain.on('runnerOpen', () => {
 let todoWin = null, todoState = null, todoTimer = 0, todoHidden = null;
 function showTodo(st) {
   const wa = screen.getPrimaryDisplay().workArea;
-  const w = 316, h = Math.min(460, 118 + (st.rows ?? st.items?.length ?? 0) * 29);
+  const w = 330, h = todoWin ? todoWin.getBounds().height : Math.min(460, 150 + (st.rows ?? st.items?.length ?? 0) * 34); // then the page reports its real height
   const bounds = { x: wa.x + wa.width - w - 16, y: wa.y + wa.height - h - 16, width: w, height: h };
   if (!todoWin) {
     todoWin = new BrowserWindow({ ...bounds, frame: false, transparent: true, hasShadow: false, resizable: false, alwaysOnTop: true, skipTaskbar: true, focusable: false, show: false,
@@ -988,6 +988,12 @@ function showTodo(st) {
   }
 }
 ipcMain.handle('todoInit', () => todoState);
+ipcMain.on('todoSize', (_e, h) => {
+  if (!todoWin || !Number.isFinite(h)) return;
+  const wa = screen.getPrimaryDisplay().workArea, b = todoWin.getBounds();
+  const height = Math.max(120, Math.min(Math.round(h), Math.min(520, wa.height - 40)));
+  if (height !== b.height) todoWin.setBounds({ ...b, y: wa.y + wa.height - height - 16, height });
+});
 ipcMain.on('todo', (_e, st) => {
   clearTimeout(todoTimer);
   if (st?.fresh) todoHidden = null;
