@@ -1,8 +1,8 @@
-import { app, BrowserWindow, ipcMain, globalShortcut, screen, Notification, shell, webContents } from 'electron';
+import { app, BrowserWindow, ipcMain, globalShortcut, screen, Notification, shell, webContents, Tray, Menu } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import started from 'electron-squirrel-startup';
 import * as db from './db.js';
 import seedKeys from '../default-keys.json';
@@ -28,12 +28,9 @@ dlog('starting; started =', started, '; packaged =', app.isPackaged);
 if (started) app.quit();
 // Launching again (e.g. desktop shortcut) just brings the running app forward.
 // (Dev runs skip the lock: an installed/background Genisys would make `npm start` exit silently.)
-if (app.isPackaged && !app.requestSingleInstanceLock()) {
-  // Another Genisys is already running (maybe stuck/hidden): kill it, then start fresh.
-  try { execFileSync('taskkill', ['/F', '/T', '/IM', path.basename(process.execPath), '/FI', `PID ne ${process.pid}`], { stdio: 'ignore' }); } catch {}
-  app.relaunch();
-  app.exit(0);
-}
+// Genisys keeps running in the tray after its window is closed, so a second launch hands over to the running copy
+// (its 'second-instance' handler shows the window) and exits.
+if (app.isPackaged && !app.requestSingleInstanceLock()) app.exit(0);
 app.on('second-instance', () => mainWin && showMain());
 
 const ASSETS = app.isPackaged ? path.join(process.resourcesPath, 'assets') : path.join(__dirname, '../../assets');
@@ -1084,17 +1081,46 @@ app.whenReady().then(() => {
   setTimeout(() => { checkModels(); checkCode(); }, 8000);
   setTimeout(() => cloud.flushPending(), 5000);
   setInterval(() => checkModels(), 6 * 3600e3);
-  mainWin.on('closed', () => { mainWin = null; app.quit(); }); // closing the launcher closes every agent
+  // Closing the main window only hides it: Genisys keeps running in the tray so the hotkeys keep working.
+  // It really quits from the tray menu (or Windows shutdown / the installer).
+  mainWin.on('close', (e) => {
+    if (quitting) return;
+    e.preventDefault();
+    mainWin.hide();
+    if (!db.getSetting('trayTipShown', false) && Notification.isSupported()) {
+      db.setSetting('trayTipShown', true);
+      new Notification({ title: 'Genisys is still running', body: `Press Alt+Space for the command bar or ${openKey} to open Genisys. To quit, right-click its icon near the clock.`, icon: path.join(ASSETS, 'icon.png') }).show();
+    }
+  });
+  mainWin.on('session-end', () => { quitting = true; }); // Windows is shutting down: let it close
+  mainWin.on('closed', () => { mainWin = null; app.quit(); });
   // System-wide hotkeys (work from any app while Genisys runs); keep in sync with the F1 help panel.
-  globalShortcut.register('Control+Alt+Space', showMain);
-  // Alt+Space is often taken (Windows window menu, PowerToys Run): fall back to Alt+Shift+Space.
-  if (!globalShortcut.register('Alt+Space', toggleRunner)) {
-    if (globalShortcut.register('Alt+Shift+Space', toggleRunner)) notify('problem', 'Alt+Space is taken by another app, so the runner uses Alt+Shift+Space.');
+  // Another app can already own a key combo; log it so a 'hotkey does nothing' report can be checked in genisys-debug.log.
+  const hotkey = (keys, fn) => { const ok = globalShortcut.register(keys, fn); dlog('hotkey', keys, ok ? 'registered' : 'TAKEN by another app'); return ok; };
+  if (!hotkey('Control+Alt+Space', showMain)) { // e.g. taken by another app on some PCs
+    if (hotkey('Control+Alt+G', showMain)) { openKey = 'Ctrl+Alt+G'; notify('problem', 'Ctrl+Alt+Space is taken by another app, so opening Genisys uses Ctrl+Alt+G.'); }
   }
-  globalShortcut.register('Control+Alt+N', () => openAgent('agent'));
-  globalShortcut.register('Control+Alt+S', () => openAgent('script'));
+  // Alt+Space is often taken (Windows window menu, PowerToys Run): fall back to Alt+Shift+Space.
+  if (!hotkey('Alt+Space', toggleRunner)) {
+    if (hotkey('Alt+Shift+Space', toggleRunner)) notify('problem', 'Alt+Space is taken by another app, so the runner uses Alt+Shift+Space.');
+  }
+  hotkey('Control+Alt+N', () => openAgent('agent'));
+  hotkey('Control+Alt+S', () => openAgent('script'));
+  // Tray icon: Genisys lives here while its window is closed (built after the hotkeys so it shows the keys in use).
+  tray = new Tray(path.join(ASSETS, 'icon.ico'));
+  tray.setToolTip('Genisys');
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: `Open Genisys (${openKey})`, click: showMain },
+    { label: 'Command bar (Alt+Space)', click: () => toggleRunner() },
+    { label: 'New agent (Ctrl+Alt+N)', click: () => openAgent('agent') },
+    { type: 'separator' },
+    { label: 'Quit Genisys', click: () => app.quit() },
+  ]));
+  tray.on('click', showMain);
   setTimeout(() => startIndex(), 15000); // low-priority background scan, 15 s after start
   dlog('main window created');
 }).catch((e) => { dlog('startup failed', e?.stack || e); cloud.reportError('crash', e); });
+let quitting = false, tray = null, openKey = 'Ctrl+Alt+Space'; // tray: kept in a variable so it is not garbage-collected (the icon would vanish)
+app.on('before-quit', () => { quitting = true; });
 app.on('will-quit', () => globalShortcut.unregisterAll());
 app.on('window-all-closed', () => app.quit());

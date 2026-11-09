@@ -31,7 +31,8 @@ LZMANumFastBytes=273
 SolidCompression=yes
 OutputDir=dist
 OutputBaseFilename=Genisys-Setup
-CloseApplications=yes
+; force: Genisys keeps running in the tray, so close it even if it does not answer the close request
+CloseApplications=force
 ; Only one Setup at a time (a quick double-click must not open two wizards).
 SetupMutex=GenisysSetupMutex
 
