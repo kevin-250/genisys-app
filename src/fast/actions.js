@@ -5,6 +5,7 @@
 //   { status: 'confirm', preview }               destructive: the page must ask the user, then call again with confirmed=true
 //   { status: 'fall',    reason }                not handled here: carry on with the next route
 import path from 'node:path';
+import { byNumbers } from './fit.js';
 
 const SYSTEM = { // opened through the Windows shell, no search needed
   calculator: 'calc.exe', notepad: 'notepad.exe', paint: 'mspaint.exe', cmd: 'cmd.exe', powershell: 'powershell.exe', terminal: 'wt.exe',
@@ -103,7 +104,7 @@ export function makeActions(d) {
       const media = m === true || m === 'true';
       if (!String(query || '').trim()) return fall('no file name');
       const r = await d.findFiles({ name: query, kind: 'file', ext: ext || (media ? MEDIA_EXT : undefined) });
-      return choose(r.matches, 'file', app);
+      return choose(byNumbers(query, r.matches), 'file', app);
     },
     async open_path({ path: p, with: app }) {
       if (!p || !d.exists(p)) return fall('that path no longer exists');

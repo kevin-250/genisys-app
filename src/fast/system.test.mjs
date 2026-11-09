@@ -113,3 +113,32 @@ test('fitFast shrinks old steps under the fast cap, never the tasks', () => {
   assert.ok(JSON.stringify(h).length < 18000);
   assert.equal(h[0].content.length, 9000); assert.equal(h[1].content, 'open trigger'); assert.equal(h[4].content, 'Episode 1');
 });
+
+import { byNumbers, dropFolderMap } from './fit.js';
+const M = (...p) => p.map(([path, score]) => ({ path, score }));
+const first = (q, m) => byNumbers(q, m)[0];
+const clear = (q, m) => { const [a, b] = byNumbers(q, m); return a.score - b.score >= 0.08 ? a.path : null; };
+test('numbers in the request pick between near-identical names', () => {
+  assert.equal(clear('trigger ep 1', M(['V/Trigger.S01E02.mkv', 0.9], ['V/Trigger.S01E01.mkv', 0.89], ['V/Trigger.S02E01.mkv', 0.88])), 'V/Trigger.S01E01.mkv');
+  assert.equal(clear('lazarus ep1', M(['S2/Lazarus.S02E01.mkv', 0.9], ['S1/Lazarus.S01E01.(NKIRI.COM).x.mkv', 0.9])), 'S1/Lazarus.S01E01.(NKIRI.COM).x.mkv');
+  assert.equal(clear('report v2', M(['D/report v1.docx', 0.95], ['D/report v2.docx', 0.95])), 'D/report v2.docx');
+  assert.equal(clear('invoice 2024', M(['D/invoice 2025.pdf', 0.9], ['D/invoice 2024.pdf', 0.9])), 'D/invoice 2024.pdf');
+  assert.equal(clear('chapter 3', M(['D/chapter 13.pdf', 0.9], ['D/chapter 3.pdf', 0.88])), 'D/chapter 3.pdf');
+  assert.equal(clear('notes', M(['D/notes work.txt', 0.9], ['D/notes home.txt', 0.9])), null, 'no numbers: a real tie stays a tie');
+  assert.equal(first('song 2', M(['M/a.mp3', 0.95], ['M/song 2.mp3', 0.5])).path, 'M/a.mp3', 'far-off matches are not promoted');
+});
+test('fitFast keeps the newest results whole, cuts older ones', () => {
+  const h = [{ role: 'system', content: 's'.repeat(8000) }, { role: 'user', content: 'old task' }, { role: 'user', content: 'o'.repeat(6000) },
+    { role: 'user', content: 'play ep1' }, { role: 'assistant', content: 'a'.repeat(300) }, { role: 'user', content: 'r'.repeat(5000) }, { role: 'user', content: 'yes' }];
+  fitFast(h, [1, 3, 6]);
+  assert.ok(h[2].content.length < 700, 'old results cut');
+  assert.equal(h[5].content.length, 5000, 'latest results kept for the short reply');
+});
+test('folder map only on the first step', () => {
+  const s = 'SYS\n\nPC CONTEXT:\nUser: x\nUSER FOLDER MAP (folder names only):\nC:\U\Videos\n  Movies\nMATCHING THIS TASK:\nfiles: a.mkv';
+  assert.equal(dropFolderMap(s), 'SYS\n\nPC CONTEXT:\nUser: x\nMATCHING THIS TASK:\nfiles: a.mkv');
+  assert.equal(dropFolderMap('no map'), 'no map');
+});
+test('router never guesses a left-out detail', () => {
+  assert.match(buildRouterMessages([], 'x')[0].content, /Never fill in a detail/);
+});

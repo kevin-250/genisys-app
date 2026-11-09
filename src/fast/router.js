@@ -10,7 +10,7 @@ export const PSEUDO = {
 export function buildRouterMessages(lines, command, folders = '') {
   const pseudo = Object.entries(PSEUDO).map(([k, v]) => `${k}() - ${v}`);
   return [
-    { role: 'system', content: `You route a Windows PC command to ONE action. Reply with ONLY JSON: {"action":"<name>","params":{...}} or {"action":"unknown"}. No other text.\nActions:\n${[...lines, ...pseudo].join('\n')}\nRules: use the exact action and param names. Paths must be full Windows paths. Never invent a path or link; if unsure answer unknown. Only pick an action that does the WHOLE request: if the user wants something sorted, compared, counted, the newest/latest, or an answer back, reply {"action":"old"}. Delete/move actions are fine to choose, the user confirms.${folders ? `\nFolders: ${folders}` : ''}` },
+    { role: 'system', content: `You route a Windows PC command to ONE action. Reply with ONLY JSON: {"action":"<name>","params":{...}} or {"action":"unknown"}. No other text.\nActions:\n${[...lines, ...pseudo].join('\n')}\nRules: use the exact action and param names. Paths must be full Windows paths. Never invent a path or link; if unsure answer unknown. Never fill in a detail the user left out (which season, which of several files, which account): reply {"action":"old"}. Only pick an action that does the WHOLE request: if the user wants something sorted, compared, counted, the newest/latest, or an answer back, reply {"action":"old"}. Delete/move actions are fine to choose, the user confirms.${folders ? `\nFolders: ${folders}` : ''}` },
     { role: 'user', content: command },
   ];
 }

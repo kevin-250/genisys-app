@@ -16,7 +16,7 @@ import { parseIntent, FAST_MIN, splitTask, isFileTask } from './fast/intent.js';
 import { controlsHelp } from './fast/system.js';
 import { cacheLookup, cacheStore, cacheKey } from './fast/cache.js';
 import { buildRouterMessages, validateRouterReply } from './fast/router.js';
-import { fitFast } from './fast/fit.js';
+import { fitFast, byNumbers, dropFolderMap } from './fast/fit.js';
 import { buildScriptMessages, extractScript } from './fast/scriptFallback.js';
 applyAccent();
 
@@ -63,6 +63,9 @@ Each reply MUST be ONE JSON object and nothing else:
 - "cmd" is then written to a .bat file and run; you receive the exit code and output next turn.
 THINK before acting:
 - DECIDE small things yourself (file names, folders, which of two equal options, sensible defaults) and state it in "decided". Don't bother the user with minor choices.
+- ACT, DON'T CONFIRM: when the user says open / play / run / show / start and ONE target is clear, do it now in this reply (for files: "find" with "open": true, plus "with" if they named an app). Never ask "Should I open X?". Never ask which folder to look in: leave out "in" and find searches all the user's folders at once. Keep the user's numbers in "find" name ("lazarus project ep1", "report v2", "invoice 2024"): the finder uses them to pick the exact file.
+- NATURAL DEFAULTS for a missing detail: the first one (season 1, part 1, page 1, the first result), the newest for "latest/last/recent", the default app or browser. Take it and say so in "decided". Ask only when the choices are really different and nothing in the request or the results points to one. "options" must be real items from your results (file names, paths): never invent them; if nothing was found, say so and try other words.
+- SHORT REPLIES ("yes", "no", "2", "ep1", "the second one", "work") answer YOUR last question: continue from the results you already have (use the paths from your last "find"), don't search again.
 - AMBIGUOUS TARGET: if the request doesn't say WHERE or WITH WHAT and the choice changes the result ("search this song", "play X", "open my mail", "look this up", "message John"), do NOT guess an app/site: ask first, with 2-4 clickable "options" (e.g. ["Spotify", "YouTube", "Browser search"]). Skip the question only when ABOUT THE USER or the request already tells you (they named the app, or you learned their usual choice). When they pick an option, add "learn" (kind "trait") with their preference so you never ask again.
 - ASK only when it really matters (two very different meanings, data could be lost, missing info you can't guess). Give 2-4 "options" the user can click.
 - Be HONEST: if an idea is bad, dumb, pointless, harmful or impossible (would wipe data, break Windows, makes no sense), say so plainly in "ask" with the reason, suggest a better way as an option, set cmd empty and done=true. Never just go along with a bad idea.
@@ -349,6 +352,7 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
   const prompt = (mode === 'script' ? SYSTEM + SCRIPT : SYSTEM) + (mode === 'script' ? '' : PC_CONTROLS) + (canDelegate ? TEAM : '') + (webMode ? BROWSER : '') + (isChild ? CHILD : '');
   const history = [{ role: 'system', content: prompt }];
   const taskStarts = []; // where each task began in history (for trimming; never sent to the AI)
+  let waitingAnswer = null; // the options of the AI's last question, while it waits for the user's answer
   let running = false;
   let abort = null; // rejects the in-flight AI wait when the user presses stop
   const setRun = (v) => { running = v; $('form').classList.toggle('busy', v); $('send').title = v ? 'Stop' : 'Send (Enter)'; };
@@ -890,14 +894,17 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
     setRun(true); stopped = false;
     const speedMode = await window.api.db('getSetting', 'speedMode', 'new'); // 'new' (default: fast route first) or 'old'
     const insist = /^!|\b(ask ai|use ai|fresh|redo|think again)\b/i.test(task);
+    // "yes", "ep1", "the second one" answer the AI's question: straight back to the AI, no fast route or saved task.
+    const answer = !!waitingAnswer && (task.trim().split(/\s+/).length <= 6 || waitingAnswer.some((o) => String(o).toLowerCase() === task.trim().toLowerCase()));
+    waitingAnswer = null;
     if (insist) task = task.replace(INSIST, '').replace(/\s+/g, ' ').trim() || task;
-    else if (!want) { // saved .bat route (timed as route "saved")
+    else if (!want && !answer) { // saved .bat route (timed as route "saved")
       const r0 = performance.now(); window.api.timing('start');
       if (await reuseSaved(task)) { window.api.timing('log', { text: task, route: 'saved', mode: speedMode, ok: true, modelCalls: 0, steps: 1, totalMs: Math.round(performance.now() - r0), stages: {} }).catch(() => {}); setSt('done'); setRun(false); return; }
     }
     // Speed mode "new": cache / code parser / AI router / AI script first. Not handled -> the old loop below runs exactly as before.
     let fastInfo = null;
-    if (speedMode === 'new' && !insist && !want && mode !== 'script' && !webMode) {
+    if (speedMode === 'new' && !insist && !want && !answer && mode !== 'script' && !webMode) {
       fastInfo = await fastFlow(task);
       if (fastInfo.handled) return;
     }
@@ -981,9 +988,15 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
         const raw = await Promise.race([window.api.ai(history, think), new Promise((_, rej) => { abort = () => rej(new Error('stopped')); })]).finally(() => tadd('modelWait', performance.now() - m0));
         aiFails = 0;
         history.push({ role: 'assistant', content: raw });
+        // The folder map is for the first step only; later steps have their find results (keeps prompts small enough for Groq).
+        history[0].content = dropFolderMap(history[0].content);
         const q0 = performance.now();
         reply = JSON.parse(raw.slice(raw.indexOf('{'), raw.lastIndexOf('}') + 1));
         tadd('parse', performance.now() - q0);
+        // models slip: a question put in "say" with options is still a question
+        if (!reply.ask && Array.isArray(reply.options) && reply.options.length && /\?\s*$/.test(reply.say || '')) reply.ask = reply.say;
+        // "with" only when the user named that app (models add VLC on their own)
+        if (reply.find?.with && !taskStarts.some((i) => history[i]?.content.toLowerCase().includes(String(reply.find.with).toLowerCase().split(/\s+/)[0]))) delete reply.find.with;
       } catch (e) {
         if (stopped) break;
         // Bad JSON or a provider hiccup: retry once with reasoning on, then fall back to command memory.
@@ -1060,6 +1073,7 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
           d.lastChild.append(br);
         }
         asked = true;
+        waitingAnswer = Array.isArray(reply.options) ? reply.options : [];
         break;
       }
       const results = [];
@@ -1106,6 +1120,8 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
         print('cmd', DEV ? `find "${reply.find.name}"${reply.find.in ? ` in ${reply.find.in}` : ''}${reply.find.ext ? ` .${String(reply.find.ext).replace(/^\./, '')}` : ''}` : `Looking for "${reply.find.name}"`, 'find');
         try {
           const r = await tm('find', window.api.find(reply.find));
+          // "ep 1", "v2", "2024" decide between near-identical names (the user's words if the AI left the numbers out)
+          r.matches = byNumbers(/\d/.test(reply.find.name) ? reply.find.name : task, r.matches || []);
           const [a, b] = r.matches;
           const clear = a && a.score >= 0.75 && (!b || a.score - b.score >= 0.08);
           if (!a) { results.push(`find found nothing for "${reply.find.name}"${r.partial ? ' (search timed out)' : ''}. Try other words, another folder, or no folder.`); stepFailed = true; print('err', 'no match', 'find'); }
@@ -1186,7 +1202,9 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
         history.push({ role: 'user', content: 'The last action FAILED, so the task is NOT done. Try another way.' });
         think = true; continue;
       }
-      if (reply.done) { tick(Infinity); break; }
+      // an answer with no action is the end, even when the model forgets "done" (else it gets asked again for nothing)
+      const acted = reply.cmd || reply.find || reply.app || reply.file?.path || reply.web || reply.do || reply.trash?.length || reply.restore || reply.delegate?.length;
+      if (reply.done || (!acted && !stepFailed && reply.say)) { tick(Infinity); break; }
       if (step === limit()) { print('err', `Stopped after ${limit()} steps.`, 'limit'); failed = true; }
     }
     live.stop(!failed && !stopped);

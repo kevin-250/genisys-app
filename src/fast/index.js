@@ -100,6 +100,13 @@ export class PathIndex {
       const qs = words.join(' ');
       for (const e of pool) { const sc = fuzzy(qs, e.n); if (sc >= 0.7) hits.push({ path: e.p, score: Math.round(sc * 100) / 100, dir: e.t === 'dir' }); }
     }
+    if (!hits.length && words.length >= 2) { // pass 3: one extra word the name doesn't have ("monthly report october" -> MONTHLY_REPORT_2026-10)
+      for (const e of pool) {
+        if (epRe && !epRe.test(e.n)) continue;
+        const hay = squash(e.p.slice(-(e.n.length + 60)));
+        if (words.filter((w) => hay.includes(w)).length === words.length - 1) hits.push({ path: e.p, score: 0.8, dir: e.t === 'dir' });
+      }
+    }
     hits.sort((a, b) => b.score - a.score || a.path.length - b.path.length);
     const uniq = [...new Map(hits.map((h) => [h.path.toLowerCase(), h])).values()];
     return (exists ? uniq.filter((h) => exists(h.path)) : uniq).slice(0, limit);

@@ -193,6 +193,7 @@ function providerList() {
   return providerDefs().map((p) => ({ ...p, keys: [...new Set([...(c.providerKeys?.[p.id] || []), p.env && process.env[p.env]].filter(Boolean))] })).filter((p) => p.keys.length);
 }
 let updater = null; // set once the app is ready (installed app only)
+const provTurn = new Map(); // provider -> next key to start with
 const provRest = new Map(); // "provider:keyId" -> ms until which it is skipped (rate limit / bad key)
 async function callCompat(p, key, model, messages, { think, maxTokens, timeoutMs }) {
   const body = { model, messages, [p.tokensParam || 'max_completion_tokens']: maxTokens || (think ? 3000 : 1000), stream: false };
@@ -210,17 +211,24 @@ async function tryProviders(messages, think, rec, opts) {
   const timeoutMs = opts.timeoutMs || (think ? 20000 : 10000);
   const lanes = [];
   const resting = (id) => (provRest.get(id) || 0) > Date.now();
-  for (const p of providerList()) for (const key of p.keys) {
-    if (resting(`${p.id}:${keyId(key)}`)) continue; // bad key
+  for (const p of providerList()) {
     const models = p.models.slice(0, opts.fast ? 1 : 2);
-    if (think) models.reverse(); // thinking harder: the bigger model first
-    // Groq's free limits are per model, so a 429 on one model (often from another window) leaves the others usable.
-    for (const model of models) if (!resting(`${p.id}:${keyId(key)}:${model}`)) lanes.push({ p, key, model });
+    if (!opts.fast) models.reverse(); // agent steps: the bigger, steadier model first (it follows the rules; 20b invents options). Router: the quick one
+    // Keys take turns (round-robin), so two windows don't both start on key 1; a full key hands over to the next one.
+    const start = (provTurn.get(p.id) || 0) % p.keys.length;
+    const keys = [...p.keys.slice(start), ...p.keys.slice(0, start)].map((key) => ({ key, n: p.keys.indexOf(key) + 1 }));
+    // Every key on the first model, then every key on the next: Groq's free limits are per key AND per model.
+    for (const model of models) for (const { key, n } of keys) {
+      if (resting(`${p.id}:${keyId(key)}`) || resting(`${p.id}:${keyId(key)}:${model}`)) continue; // bad key / that model is full on it
+      lanes.push({ p, key, n, model });
+    }
+    provTurn.set(p.id, start + 1);
   }
   if (!lanes.length) return null;
-  const one = async ({ p, key, model }) => {
+  let timeouts = 0;
+  const one = async ({ p, key, n, model }) => {
     const at = Date.now();
-    const note = (r) => rec.attempts.push({ provider: p.id, model, key: 0, ms: Date.now() - at, r });
+    const note = (r) => rec.attempts.push({ provider: p.id, model, key: n, ms: Date.now() - at, r });
     try {
       const { res, data } = await callCompat(p, key, model, messages, { think, maxTokens: opts.maxTokens, timeoutMs });
       const text = data.choices?.[0]?.message?.content;
@@ -228,14 +236,15 @@ async function tryProviders(messages, think, rec, opts) {
       if (res.status === 429) provRest.set(`${p.id}:${keyId(key)}:${model}`, Date.now() + 1000 * Math.min(60, Math.max(5, Number(res.headers.get('retry-after')) || 20)));
       if ([401, 403].includes(res.status)) provRest.set(`${p.id}:${keyId(key)}`, Date.now() + 3600e3);
       note(res.ok ? 'empty' : `http ${res.status}`);
-    } catch (err) { note(err.name === 'TimeoutError' ? 'timeout' : 'error'); }
+    } catch (err) { if (err.name === 'TimeoutError') timeouts++; note(err.name === 'TimeoutError' ? 'timeout' : 'error'); }
     throw new Error('provider failed');
   };
   if (db.getSetting('raceProviders', false)) { // optional, default OFF: first provider to answer wins (costs more requests)
     const firsts = [...new Map(lanes.map((l) => [l.p.id, l])).values()];
     try { return await Promise.any(firsts.map(one)); } catch { return null; }
   }
-  for (const lane of lanes.slice(0, 4)) { try { return await one(lane); } catch {} }
+  // up to 6 tries (3 keys x 2 models); 2 timeouts mean the network or Groq is slow right now: go to the fallback instead
+  for (const lane of lanes.slice(0, 6)) { if (timeouts >= 2) break; try { return await one(lane); } catch {} }
   return null;
 }
 // Settings > Keys: keys for the fast providers (masked in the page).
@@ -279,7 +288,7 @@ ipcMain.handle('context', (_e, task = '') => {
   const roots = [...new Set([...homeDirs(), path.join(os.homedir(), 'OneDrive'), ...myPaths().roots])].filter((r) => pindex.dirs.has(r));
   const hits = pindex.contextFor(task);
   const files = Object.entries(hits).map(([k, v]) => `${k.replace(/_/g, ' ')}: ${v.join(' | ')}`).join('\n');
-  return `${head}\nUSER FOLDER MAP (folder names only):\n${pindex.folderMap(roots, 3000)}${files ? `\nMATCHING THIS TASK:\n${files}` : ''}`;
+  return `${head}\nUSER FOLDER MAP (folder names only):\n${pindex.folderMap(roots, 2000)}${files ? `\nMATCHING THIS TASK:\n${files}` : ''}`;
 });
 // Before the index exists: the old two-level folder listing.
 function legacyTree() {
@@ -603,7 +612,7 @@ const findFiles = async ({ name, in: dir, kind = 'any', ext } = {}) => {
   const uniq = [...new Map(found.map((f) => [f.path.toLowerCase(), f])).values()];
   return { matches: uniq.slice(0, 8), scanned: seen, partial: Date.now() >= end };
 };
-ipcMain.handle('find', (_e, o) => findFiles(o));
+ipcMain.handle('find', (_e, o) => findSmart(o)); // the saved index first, then a disk scan
 // Deleting goes to the Recycle Bin so it can be undone; "restore" brings items back by (part of) name or original path.
 ipcMain.handle('trash', async (_e, list) => {
   const out = [];
@@ -732,9 +741,14 @@ async function startIndex(force, deadline = 0) {
 }
 // Index first (a few ms); the live folder walk only when the index is missing or knows nothing.
 async function findSmart(opts = {}) {
-  if (!opts.in && pindex.ready && opts.name) {
+  if (pindex.ready && opts.name) {
     const t = Date.now();
-    const matches = pindex.lookup(opts.name, { kind: opts.kind, ext: opts.ext, exists: fs.existsSync }).slice(0, 8).map((m) => ({ path: m.path, score: m.score, dir: m.dir }));
+    // "in" a folder: the same index, only paths under it (instant; the disk scan below takes up to 8 s)
+    const under = opts.in ? path.resolve(os.homedir(), String(opts.in).replace(/%(\w+)%/g, (m, v) => process.env[v] ?? m)).toLowerCase() + path.sep : '';
+    const all = pindex.lookup(opts.name, { kind: opts.kind, ext: opts.ext, exists: fs.existsSync, limit: under ? 60 : 8 });
+    const inside = all.filter((m) => !under || m.path.toLowerCase().startsWith(under));
+    // a wrong folder guess ("documents" when they live in OneDrive) must not hide the file: then anywhere
+    const matches = (inside.length ? inside : all).slice(0, 8).map((m) => ({ path: m.path, score: m.score, dir: m.dir }));
     if (matches.length) return { matches, scanned: 0, partial: false, fromIndex: true, ms: Date.now() - t };
   }
   return findFiles(opts);
