@@ -1,6 +1,7 @@
 // Stage 2: understand simple commands without any model. Returns { action, params, confidence (0-1), normalized, reason }.
 // Only a few safe "open / search / play" shapes are understood. Everything else gets a low confidence and goes on to the AI.
 import { normalize, typoDistance } from './normalize.js';
+import { parseSystem } from './system.js';
 
 export const FAST_MIN = 0.75; // at or above this the fast path may run it
 
@@ -62,6 +63,10 @@ export function parseIntent(text) {
   if (!n) return unknown(n, 0, 'empty');
   const words = n.split(' ');
   if (words.length > 16) return unknown(n, 0.1, 'too long for the fast path');
+
+  // Built-in PC controls (volume, camera, screenshot, close app, shutdown…): no AI needed.
+  const pc = parseSystem(n);
+  if (pc) return out('pc', pc, 0.95, n, 'pc control');
 
   // A bare URL ("youtube.com", "https://x.com/a") just opens.
   if (words.length === 1 && URL_RE.test(words[0])) return out('open_url', { url: toUrl(rawToken(raw, words[0])) }, 0.92, n, 'bare url');
@@ -139,4 +144,13 @@ function toUrl(t) { return /^https?:\/\//i.test(t) ? t : `https://${t}`; }
 function rawToken(raw, lowered) {
   const hit = raw.split(/\s+/).find((w) => w.replace(/[^\p{L}\p{N}]+$/u, '').toLowerCase() === lowered.replace(/[^\p{L}\p{N}]+$/u, ''));
   return (hit || lowered).replace(/[,;!?)]+$/, '');
+}
+
+/**
+ * "open spotify and put volume at 40%" -> ['open spotify', 'put volume at 40%'] (2-4 parts), else null.
+ * The caller only runs the parts if EVERY part is a command the parser understands, so "search cats and dogs" stays one task.
+ */
+export function splitTask(text) {
+  const parts = String(text || '').split(/\s*(?:,|;|\band then\b|\bthen\b|\band\b|&)\s*/i).map((s) => s.trim()).filter(Boolean);
+  return parts.length >= 2 && parts.length <= 4 ? parts : null;
 }

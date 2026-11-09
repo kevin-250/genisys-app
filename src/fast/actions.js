@@ -67,6 +67,7 @@ export function makeActions(d) {
   const inside = (p) => d.isAllowed(p);
 
   const A = {
+    pc: (p, confirmed) => d.system(p, confirmed), // built-in PC controls (src/fast/system.js)
     async open_app({ name }) {
       const key = String(name || '').toLowerCase().trim();
       if (!key) return fall('no app name');

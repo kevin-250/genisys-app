@@ -189,7 +189,7 @@ async function settingsTab(root) {
   f.custom.value = P.custom;
   f.autostart.checked = autostart;
   f.sendErrors.checked = await window.api.db('getSetting', 'sendErrors', false);
-  f.speed.checked = (await window.api.db('getSetting', 'speedMode', 'old')) === 'new';
+  f.speed.checked = (await window.api.db('getSetting', 'speedMode', 'new')) === 'new';
   const paintSpeed = async () => {
     const n = await window.api.db('cacheCount');
     const ix = await window.api.indexInfo();

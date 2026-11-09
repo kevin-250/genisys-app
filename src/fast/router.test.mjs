@@ -12,7 +12,7 @@ const ctx = { env, isAllowed: (p) => p.toLowerCase().startsWith('c:\\users\\me\\
 const v = (raw) => validateRouterReply(raw, reg, ctx);
 
 test('valid answers', () => {
-  assert.deepEqual(v('{"action":"set_volume","params":{"level":30}}'), { ok: true, action: 'set_volume', params: { level: 30 } });
+  assert.deepEqual(v('{"action":"pc","params":{"do":"volume","value":30}}'), { ok: true, action: 'pc', params: { do: 'volume', value: 30 } });
   assert.deepEqual(v('Sure!\n```json\n{"action":"search_web","params":{"query":"cats"}}\n```'), { ok: true, action: 'search_web', params: { query: 'cats' } });
   assert.deepEqual(v('{"action":"unknown"}'), { ok: true, action: 'unknown', params: {} });
   assert.equal(v('{"action":"script"}').action, 'script');
@@ -27,8 +27,8 @@ test('unknown or internal action', () => {
 });
 test('missing or wrong-typed params', () => {
   assert.equal(v('{"action":"open_app","params":{}}').ok, false);
-  assert.equal(v('{"action":"set_volume","params":{"level":"loud"}}').ok, false);
-  assert.equal(v('{"action":"set_volume","params":{"level":500}}').ok, false);
+  assert.equal(v('{"action":"pc","params":{"do":"volume","value":"loud"}}').ok, false);
+  assert.equal(v('{"action":"pc","params":{"do":"format_c"}}').ok, false);
   assert.equal(v('{"action":"open_url","params":{"url":"javascript:alert(1)"}}').ok, false);
   assert.equal(v('{"action":"open_url","params":{"url":"ftp://x.com"}}').ok, false);
 });

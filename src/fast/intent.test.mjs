@@ -12,7 +12,9 @@ const GOOD = [
   ['open google chrome', 'open_app', { name: 'chrome' }],
   ['start notepad', 'open_app', { name: 'notepad' }],
   ['open vs code', 'open_app', { name: 'code' }],
-  ['open task manager', 'open_app', { name: 'taskmgr' }],
+  ['open task manager', 'pc', { do: 'task_manager' }],
+  ['what is my ip', 'pc', { do: 'ip_address' }],
+  ['set volume to 30', 'pc', { do: 'volume', value: 30 }],
   ['open downloads', 'open_folder', { folder: 'downloads' }],
   ['open my downloads folder', 'open_folder', { folder: 'downloads' }],
   ['show me the documents folder', 'open_folder', { folder: 'documents' }],
@@ -48,7 +50,7 @@ for (const [text, action, params] of GOOD) {
 
 // Anything that is not a plain open/search must NOT reach the fast path.
 const NOT_FAST = [
-  'play my dear by element on spotify', 'what is my ip', 'set volume to 30', 'create a file test.txt on desktop',
+  'play my dear by element on spotify', 'create a file test.txt on desktop',
   'delete my downloads folder', 'delete everything and open chrome', 'open chrome and then close it', 'open downloads and delete old files',
   'how do I open the task manager', 'hello', 'find my cv', 'open', '', 'send an email to john', 'install vlc', 'open the file about taxes and summarize it',
 ];

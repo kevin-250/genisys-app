@@ -15,6 +15,8 @@ import { checkScript, isInside } from './fast/safety.js';
 import { hashScript } from './fast/scriptFallback.js';
 import { parseLog, formatStats } from './fast/stats.js';
 import * as cloud from './cloud.js';
+import { createHelper } from './fast/helper.js';
+import { makeSystem } from './fast/system.js';
 
 // Diagnostics: if the app ever exits on its own, say who asked for it and why (also saved to %TEMP%\genisys-debug.log).
 const dlog = (...a) => { const line = `[${new Date().toISOString()}] ${a.join(' ')}`; console.log('[genisys]', line); try { fs.appendFileSync(path.join(os.tmpdir(), 'genisys-debug.log'), line + '\n'); } catch {} };
@@ -32,6 +34,9 @@ if (started) app.quit();
 // (its 'second-instance' handler shows the window) and exits.
 if (app.isPackaged && !app.requestSingleInstanceLock()) app.exit(0);
 app.on('second-instance', () => mainWin && showMain());
+
+// Always-ready hidden PowerShell (volume, PC controls, short AI PowerShell commands): no 1-3 s startup per command.
+const helper = createHelper({ log: dlog });
 
 const ASSETS = app.isPackaged ? path.join(process.resourcesPath, 'assets') : path.join(__dirname, '../../assets');
 const DEFAULT_MODELS = ['nvidia/nemotron-3-ultra-550b-a55b:free', 'nvidia/nemotron-3.5-super-vl:free', 'google/gemma-4-31b-it:free'];
@@ -326,7 +331,7 @@ ipcMain.handle('timing', (e, op, rec) => {
 
 const aiHandler = async (e, messages, think, rec, opts = {}) => {
   // Speed mode: try the fast providers first (short prompts only: their free limits are small), then fall back to OpenRouter below.
-  if (opts.fast || (db.getSetting('speedMode', 'old') === 'new' && rec.promptChars < 18000)) {
+  if (opts.fast || rec.promptChars < 18000) { // fast providers (Groq…) first for every call that fits; OpenRouter is the fallback
     const fast = await tryProviders(messages, think, rec, opts);
     if (fast != null) return fast;
   }
@@ -507,7 +512,18 @@ function runFile(file, temp, tm = {}) {
     p.on('close', (code) => finish(code));
   });
 }
+// A lone `powershell -Command "…"` from the AI: run it in the warm helper (no PowerShell startup). Anything else: a .bat.
+const PS_ONLY = /^\s*powershell(?:\.exe)?(?:\s+-(?:NoProfile|NoLogo|NonInteractive|ExecutionPolicy\s+\w+|WindowStyle\s+\w+))*\s+-(?:Command|c)\s+"((?:[^"]|"")*)"\s*$/i;
 ipcMain.handle('run', async (e, cmd) => {
+  const ps = PS_ONLY.exec(cmd);
+  if (ps && !/[\r\n]/.test(cmd)) {
+    try {
+      const t0 = Date.now();
+      const r = await helper.run(ps[1].replace(/""/g, '"'), 60000);
+      try { tp(e.sender.id).run.push({ cmd: cmd.slice(0, 80), helperMs: Date.now() - t0 }); } catch {}
+      return { code: r.code, out: String(r.out || '').slice(0, MAX_OUT) };
+    } catch (err) { dlog('helper run failed, using a new process:', err.message); }
+  }
   const w0 = Date.now();
   const file = path.join(os.tmpdir(), `exec-${Date.now()}-${Math.random().toString(36).slice(2)}.bat`);
   fs.writeFileSync(file, `@echo off\r\nchcp 65001 >nul\r\n${batSafe(cmd).replace(/\r?\n/g, '\r\n')}\r\n`);
@@ -770,6 +786,13 @@ function getFast() {
     copy: (a, b) => fs.cpSync(a, b, { recursive: true, errorOnExist: true, force: false }),
     move: (a, b) => fs.renameSync(a, b),
     trash: (p) => shell.trashItem(p),
+    system: makeSystem({
+      helper,
+      openExternal: (u) => shell.openExternal(u),
+      launch: (exe, args) => { const c = spawn(exe, args, { detached: true, stdio: 'ignore', windowsHide: true }); c.on('error', () => {}); c.unref(); },
+      os,
+      statfs: (p) => { try { return fs.statfsSync(p); } catch { return null; } },
+    }),
   });
   return (fastState = { reg, A, paths });
 }
@@ -1072,6 +1095,8 @@ app.whenReady().then(() => {
     if (added.length) { fs.mkdirSync(path.dirname(cfgPath()), { recursive: true }); writeCfg(c); db.setSetting('seededProviderKeys', [...seededP, ...added]); }
   }
   app.setAppUserModelId('Genisys'); // toast title/icon on Windows
+  // v1.2: the fast route is the default now; installs that saved the old setting move over once (they can switch back in Settings).
+  if (!db.getSetting('fastRouteMigrated', false)) { db.setSetting('speedMode', 'new'); db.setSetting('fastRouteMigrated', true); }
   setAutostart(db.getSetting('autostart', true));
 
   for (const m of db.listMemory()) { const fixed = m.cmds.map(fixCmd); if (fixed.some((c, i) => c !== m.cmds[i])) db.updateMemory(m.id, fixed); }
@@ -1118,9 +1143,10 @@ app.whenReady().then(() => {
   ]));
   tray.on('click', showMain);
   setTimeout(() => startIndex(), 15000); // low-priority background scan, 15 s after start
+  setTimeout(() => helper.warm(), 10000); // so the first volume / PC control is instant
   dlog('main window created');
 }).catch((e) => { dlog('startup failed', e?.stack || e); cloud.reportError('crash', e); });
 let quitting = false, tray = null; // tray: kept in a variable so it is not garbage-collected (the icon would vanish)
 app.on('before-quit', () => { quitting = true; });
-app.on('will-quit', () => globalShortcut.unregisterAll());
+app.on('will-quit', () => { globalShortcut.unregisterAll(); helper.stop(); });
 app.on('window-all-closed', () => app.quit());

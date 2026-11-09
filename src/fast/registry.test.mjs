@@ -40,7 +40,7 @@ test('validateParams: types, ranges, enums, paths', () => {
 test('the real actions/ folder loads and every action is complete', () => {
   const reg = loadActions(fs, ACTIONS);
   assert.deepEqual(reg.bad, undefined, String(reg.bad));
-  for (const n of ['open_app', 'open_url', 'search_web', 'open_folder', 'open_file', 'create_file', 'read_file', 'list_files', 'copy_file', 'move_file', 'delete_file', 'set_volume']) {
+  for (const n of ['open_app', 'open_url', 'search_web', 'open_folder', 'open_file', 'create_file', 'read_file', 'list_files', 'copy_file', 'move_file', 'delete_file', 'pc']) {
     const s = reg.get(n);
     assert.ok(s, n);
     assert.ok(s.description && s.prompt.includes('Example'), `${n} needs a description and prompt.md`);
@@ -50,9 +50,9 @@ test('the real actions/ folder loads and every action is complete', () => {
   assert.ok(reg.get('open_path').internal);
   assert.ok(!routerLines(reg).some((l) => l.startsWith('open_path')));
 });
-test('set_volume template fills', () => {
-  const s = loadActions(fs, ACTIONS).get('set_volume');
-  assert.match(fillTemplate(s.templateText, { level: 30 }, s), /\$level = 30/);
+test('templates fill ints bare and text quoted', () => {
+  const s = { params: { level: { type: 'int' }, who: { type: 'string' } } };
+  assert.equal(fillTemplate('$level = {{LEVEL}}; $w = {{WHO}}', { level: 30, who: "it's" }, s), "$level = 30; $w = 'it''s'");
 });
 
 // A brand-new action folder works with NO other code change (fake disk).

@@ -12,7 +12,7 @@ import { applyAccent } from './accent.js';
 import { mountDots } from './dots.js';
 import { ANIM } from './anim.js';
 import { cookbookHints } from './cookbook.js';
-import { parseIntent, FAST_MIN } from './fast/intent.js';
+import { parseIntent, FAST_MIN, splitTask } from './fast/intent.js';
 import { cacheLookup, cacheStore, cacheKey } from './fast/cache.js';
 import { buildRouterMessages, validateRouterReply } from './fast/router.js';
 import { buildScriptMessages, extractScript } from './fast/scriptFallback.js';
@@ -708,11 +708,13 @@ TEAM MEMBER: you are one of several agents working in parallel for a manager. Do
   const getFastCtx = async () => (fastCtx ||= await window.api.fastSpecs().then((r) => ({ ...r, reg: new Map(r.specs.map((x) => [x.name, x])) })));
   const OPENERS = new Set(['open_app', 'open_url', 'search_web', 'open_folder', 'open_file', 'open_path']);
   const CHAT = /^(what|why|how|who|when|where|which|tell|explain|write|summari[sz]e|translate|hi|hello|hey|thanks?)\b|\?\s*$/i;
+  const host = (u) => { try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return u; } };
   const describe = (a, p) => ({
-    open_app: `open ${p.name}`, open_url: `open ${p.url}${p.browser ? ` in ${p.browser}` : ''}`,
-    search_web: `search "${p.query}"${p.browser ? ` in ${p.browser}` : ''}${p.site ? ` on ${p.site}` : ''}`,
-    open_folder: `open folder ${p.folder || p.name}`, open_file: `find and open "${p.query}"`, open_path: `open ${p.path}`,
-  }[a] || `${a} ${JSON.stringify(p)}`);
+    open_app: `Opening ${p.name}`, open_url: `Opening ${host(p.url)}${p.browser ? ` in ${p.browser}` : ''}`,
+    search_web: `Searching for "${p.query}"${p.site ? ` on ${p.site}` : ''}`,
+    open_folder: `Opening your ${p.folder || p.name} folder`, open_file: `Looking for "${p.query}"`, open_path: 'Opening it',
+    pc: `${String(p.do).replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase())}${p.value != null && p.value !== 1 ? ` ${p.value}` : ''}${p.name ? ` ${p.name.replace(/_/g, ' ')}` : ''}`,
+  }[a] || 'Working on it');
 
   async function fastFlow(task) {
     const F0 = performance.now(), S = {}, st = { calls: 0 };
@@ -792,6 +794,22 @@ TEAM MEMBER: you are one of several agents working in parallel for a manager. Do
     const it = parseIntent(task);
     mark('parse', t);
     if (it.action !== 'unknown' && it.confidence >= FAST_MIN) return done(await handle('fast', it.action, it.params));
+    // 2b. several simple commands in one line ("open spotify and put volume at 40%"): each runs in order, still zero model calls
+    const parts = splitTask(task);
+    const its = parts && parts.map((p) => parseIntent(p));
+    if (its && its.every((x) => x.action !== 'unknown' && x.confidence >= FAST_MIN)) {
+      let ok = true, ran = 0;
+      for (const x of its) {
+        print('cmd', describe(x.action, x.params), 'fast');
+        const r = await exec(x.action, x.params);
+        if (r.status === 'done') { print('out', r.message, 'fast'); ran++; continue; }
+        if (r.status === 'refused') { print('dim', 'skipped', ''); continue; }
+        if (!ran) return done(false); // nothing happened yet: let the AI take the whole task
+        ok = false; print('err', r.reason || r.message || "couldn't do that part", ''); break;
+      }
+      await finish('fast', its[0].action, ok, { parts: its.length });
+      return done(true);
+    }
     if (CHAT.test(task.trim())) return done(false); // questions and chat go straight to the full AI
 
     // 3. AI router: ONE short JSON call (max 2 with the retry), everything it says is validated in code
@@ -851,7 +869,7 @@ TEAM MEMBER: you are one of several agents working in parallel for a manager. Do
 
   async function loop(task, want = null) { // want = { n, web } from "/agent N task": this window's AI splits the work across N agents
     setRun(true); stopped = false;
-    const speedMode = await window.api.db('getSetting', 'speedMode', 'old'); // 'old' (default) or 'new'
+    const speedMode = await window.api.db('getSetting', 'speedMode', 'new'); // 'new' (default: fast route first) or 'old'
     const insist = /^!|\b(ask ai|use ai|fresh|redo|think again)\b/i.test(task);
     if (insist) task = task.replace(INSIST, '').replace(/\s+/g, ' ').trim() || task;
     else if (!want) { // saved .bat route (timed as route "saved")
@@ -886,9 +904,8 @@ TEAM MEMBER: you are one of several agents working in parallel for a manager. Do
     history[0].content = `${prompt}\n\n${await promptExtras(task, P)}\n\nPC CONTEXT:\n${await window.api.context()}${open ? `\n\nOPEN IN THE EDITOR (the user may have edited it; build on this version):\n${open.path}\n${open.text.slice(0, 12000)}` : ''}`;
     tadd('promptBuild', performance.now() - p0);
     history.push({ role: 'user', content: want ? `${task}\n\n[The user asked for ${want.n} agents${want.web ? ' that work on the web' : ''} for this. Split the work into exactly ${want.n} independent jobs with "delegate"${want.web ? ' (set web: true on each)' : ''}, unless it is too small to split: then say you'll do it yourself and do it.]` : task });
-    // Fast mode for short commands; long/complex requests (and anything that fails) get deep reasoning.
-    const needsThought = /\b(search|spotify|play|song|music|youtube|google|install|download|write|script|code|find|delete|remove|move|copy|rename|zip|schedule|email|send|settings|network|wifi|registry)\b/i;
-    let think = P.deep || !!want || task.split(/\s+/).length > 8 || needsThought.test(task);
+    // Quick answers by default; deep reasoning only when asked (Settings), for /agent, very long requests, or after a step fails.
+    let think = P.deep || !!want || task.split(/\s+/).length > 25;
     let plan = null; // checklist box when the AI breaks the task into steps
     let asked = false;
     let failed = false;
