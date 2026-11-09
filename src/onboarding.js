@@ -46,7 +46,7 @@ export function startOnboarding() {
 
   const STEPS = [
     { // 1 · account
-      html: () => `<img class="ob-logo" src="${logoUrl}" alt="" />${head('Welcome to Genisys', 'Create your account', 'Just your email. No password, no spam. It lets me count who uses Genisys and reply when you send a report.')}
+      html: () => `<img class="ob-logo" src="${logoUrl}" alt="" />${head('Welcome to Genisys', 'Create your account', 'Just your email. No password, no spam. It lets me count who uses Genisys and reply when you send a report. Basic PC specs (Windows version, CPU, RAM) are shared too, so it runs well on your PC.')}
         <label class="ob-label" for="ob-email">Email</label>
         <input id="ob-email" class="ob-input" type="email" autocomplete="email" placeholder="you@example.com" value="${esc(d.email)}" />
         <p class="ob-err" id="ob-email-err" hidden>That doesn't look like an email address yet.</p>`,
