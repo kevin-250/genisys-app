@@ -1,7 +1,7 @@
 ; Genisys installer (Inno Setup 6 or 7). Build: package the app first (npm run package), then compile this file
 ; with Inno Setup (or run build-installer.bat). Output: installer\dist\Genisys-Setup.exe
 #define AppName "Genisys"
-#define AppVersion "1.2.2"
+#define AppVersion "1.2.3"
 #define AppExe "genisys.exe"
 #define Src "..\out\Genisys-win32-x64"
 
