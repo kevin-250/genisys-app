@@ -28,6 +28,10 @@
         "false"
       ],
       "required": false
+    },
+    "with": {
+      "type": "string",
+      "required": false
     }
   },
   "destructive": false,

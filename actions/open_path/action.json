@@ -6,6 +6,10 @@
     "path": {
       "type": "path",
       "required": true
+    },
+    "with": {
+      "type": "string",
+      "required": false
     }
   },
   "destructive": false,

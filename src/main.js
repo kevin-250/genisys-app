@@ -18,6 +18,7 @@ import * as cloud from './cloud.js';
 import { createHelper } from './fast/helper.js';
 import { makeSystem } from './fast/system.js';
 import { isFileTask } from './fast/intent.js';
+import { FAST_CAP } from './fast/fit.js';
 import { startUpdater } from './updater.js';
 import { newer } from './version.js';
 
@@ -221,11 +222,15 @@ async function callCompat(p, key, model, messages, { think, maxTokens, timeoutMs
 }
 // First valid answer wins. Per-call timeout 5 s, then the next provider. null = none answered (caller falls back to OpenRouter).
 async function tryProviders(messages, think, rec, opts) {
-  const timeoutMs = opts.timeoutMs || 5000;
+  const timeoutMs = opts.timeoutMs || (think ? 20000 : 10000);
   const lanes = [];
+  const resting = (id) => (provRest.get(id) || 0) > Date.now();
   for (const p of providerList()) for (const key of p.keys) {
-    if ((provRest.get(`${p.id}:${keyId(key)}`) || 0) > Date.now()) continue;
-    for (const model of p.models.slice(0, opts.fast ? 1 : 2)) lanes.push({ p, key, model });
+    if (resting(`${p.id}:${keyId(key)}`)) continue; // bad key
+    const models = p.models.slice(0, opts.fast ? 1 : 2);
+    if (think) models.reverse(); // thinking harder: the bigger model first
+    // Groq's free limits are per model, so a 429 on one model (often from another window) leaves the others usable.
+    for (const model of models) if (!resting(`${p.id}:${keyId(key)}:${model}`)) lanes.push({ p, key, model });
   }
   if (!lanes.length) return null;
   const one = async ({ p, key, model }) => {
@@ -235,7 +240,7 @@ async function tryProviders(messages, think, rec, opts) {
       const { res, data } = await callCompat(p, key, model, messages, { think, maxTokens: opts.maxTokens, timeoutMs });
       const text = data.choices?.[0]?.message?.content;
       if (res.ok && text) { note('ok'); rec.provider = p.id; rec.model = model; rec.usage = data.usage || null; return text; }
-      if (res.status === 429) provRest.set(`${p.id}:${keyId(key)}`, Date.now() + 60000);
+      if (res.status === 429) provRest.set(`${p.id}:${keyId(key)}:${model}`, Date.now() + 1000 * Math.min(60, Math.max(5, Number(res.headers.get('retry-after')) || 20)));
       if ([401, 403].includes(res.status)) provRest.set(`${p.id}:${keyId(key)}`, Date.now() + 3600e3);
       note(res.ok ? 'empty' : `http ${res.status}`);
     } catch (err) { note(err.name === 'TimeoutError' ? 'timeout' : 'error'); }
@@ -337,7 +342,7 @@ ipcMain.handle('timing', (e, op, rec) => {
 
 const aiHandler = async (e, messages, think, rec, opts = {}) => {
   // Speed mode: try the fast providers first (short prompts only: their free limits are small), then fall back to OpenRouter below.
-  if (opts.fast || rec.promptChars < 18000) { // fast providers (Groq…) first for every call that fits; OpenRouter is the fallback
+  if (opts.fast || rec.promptChars < FAST_CAP) { // fast providers (Groq…) first for every call that fits; OpenRouter is the fallback
     const fast = await tryProviders(messages, think, rec, opts);
     if (fast != null) return fast;
   }
@@ -368,7 +373,7 @@ const aiHandler = async (e, messages, think, rec, opts = {}) => {
           headers: { Authorization: `Bearer ${k}`, 'Content-Type': 'application/json' },
           // No response_format: Nemotron Ultra doesn't support it; the renderer extracts the {...} from the reply instead.
           body: JSON.stringify({ model, messages, max_tokens: opts.maxTokens || (think ? 3000 : 1000), reasoning: { enabled: !!think } }),
-          signal: AbortSignal.timeout(opts.fast ? 8000 : think ? 60000 : 20000), // a busy free model fails fast; the next one is tried
+          signal: AbortSignal.timeout(opts.fast ? 8000 : think ? 30000 : 20000), // a busy free model fails fast; the next one is tried
         });
         data = await res.json().catch(() => ({}));
       } catch (err) { rec.attempts.push({ model, key: n, ms: Date.now() - at, r: err.name === 'TimeoutError' ? 'timeout' : 'error' }); lastErr = `${model}: ${err.name === 'TimeoutError' ? 'timed out' : err.message}`; transient = true; say('slow, switching model…'); continue; }

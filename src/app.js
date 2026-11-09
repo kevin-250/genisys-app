@@ -12,10 +12,11 @@ import { applyAccent } from './accent.js';
 import { mountDots } from './dots.js';
 import { ANIM } from './anim.js';
 import { cookbookHints } from './cookbook.js';
-import { parseIntent, FAST_MIN, splitTask } from './fast/intent.js';
+import { parseIntent, FAST_MIN, splitTask, isFileTask } from './fast/intent.js';
 import { controlsHelp } from './fast/system.js';
 import { cacheLookup, cacheStore, cacheKey } from './fast/cache.js';
 import { buildRouterMessages, validateRouterReply } from './fast/router.js';
+import { fitFast } from './fast/fit.js';
 import { buildScriptMessages, extractScript } from './fast/scriptFallback.js';
 applyAccent();
 
@@ -90,6 +91,7 @@ Be FAST and SMART (every extra step costs the user real seconds):
 - PowerShell is allowed via: powershell -NoProfile -Command "..."
 - Before sending a cmd, silently double-check it: the user's words are copied EXACTLY (never swap or add characters in names, songs or search text), quotes balance, paths exist in PC CONTEXT, and the command really does what was asked. A search must contain the user's real words with normal spaces.
 - In a .bat file a literal % must be written %% (a URL space is %%20, not %20). The app repairs lone %20, but write it right.
+- "SEARCH X": with my / folder / pc / downloads / files (e.g. "search in my movie folder…", "search my downloads for cv") it means search THIS PC: use "find" or list the folder (newest first: dir /o-d). Without them it means the web.
 - "OPEN <browser> AND SEARCH X": the user wants to SEE the search in the browser, so do NOT just answer from the "web" tool. Run ONE command that opens the results page in that browser with the exact words: Chrome → start chrome "https://www.google.com/search?q=elon+musk+net+worth"; Edge → start msedge "https://www.bing.com/search?q=..."; Firefox → start firefox "https://www.google.com/search?q=..."; no browser named → start "" "https://www.google.com/search?q=...". Join the words with +. Opening the browser without the search is a failure. You may add a short answer in "say" afterwards, but the browser must show the search.
 - Spotify: to search, start "" "spotify:search:<words joined with %%20>" (e.g. song "my dear" by Element → spotify:search:my%%20dear%%20element). To play something specific, search first and tell the user to press play; you cannot click inside apps.
 - If you are NOT sure of an app's command-line or URI syntax (Spotify, WhatsApp, Discord, Steam, Teams…), look it up first with "web" search, then build the command from what you found. Never guess syntax.
@@ -723,6 +725,7 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
   const getFastCtx = async () => (fastCtx ||= await window.api.fastSpecs().then((r) => ({ ...r, reg: new Map(r.specs.map((x) => [x.name, x])) })));
   const OPENERS = new Set(['open_app', 'open_url', 'search_web', 'open_folder', 'open_file', 'open_path']);
   const CHAT = /^(what|why|how|who|when|where|which|tell|explain|write|summari[sz]e|translate|hi|hello|hey|thanks?)\b|\?\s*$/i;
+  const ANSWER = /\band\s+(?:tell|show|see|list|give)\b|\b(?:latest|newest|recent(?:ly)?|how many|which one)\b/i; // wants an answer back, not one action
   const host = (u) => { try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return u; } };
   const describe = (a, p) => ({
     open_app: `Opening ${p.name}`, open_url: `Opening ${host(p.url)}${p.browser ? ` in ${p.browser}` : ''}`,
@@ -825,10 +828,11 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
       await finish('fast', its[0].action, ok, { parts: its.length });
       return done(true);
     }
-    if (CHAT.test(task.trim())) return done(false); // questions and chat go straight to the full AI
+    if (CHAT.test(task.trim()) || ANSWER.test(task)) return done(false); // questions, chat and "tell me the latest…" go straight to the full AI
 
-    // 3. AI router: ONE short JSON call (max 2 with the retry), everything it says is validated in code
-    const msgs = buildRouterMessages(sp.lines, task, sp.folders);
+    // 3. AI router: ONE short JSON call (max 2 with the retry), everything it says is validated in code.
+    // File tasks: it gets the same folder map as the AI, so "movie folder" resolves to Videos\Movies, not Videos.
+    const msgs = buildRouterMessages(sp.lines, task, isFileTask(task) ? `${sp.folders}\n${await window.api.context(task).catch(() => '')}` : sp.folders);
     let routed = null, lastErr = '', lastRaw = '';
     for (let attempt = 0; attempt < 2 && !routed; attempt++) {
       setSt('thinking');
@@ -973,6 +977,7 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
       let reply;
       try {
         const m0 = performance.now(); modelCalls++;
+        fitFast(history, taskStarts);
         const raw = await Promise.race([window.api.ai(history, think), new Promise((_, rej) => { abort = () => rej(new Error('stopped')); })]).finally(() => tadd('modelWait', performance.now() - m0));
         aiFails = 0;
         history.push({ role: 'assistant', content: raw });

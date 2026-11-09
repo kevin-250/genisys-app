@@ -87,3 +87,29 @@ test('natural questions about the PC are answered without AI', () => {
   }
   assert.notEqual(ask('how much is a flight to paris').action, 'pc');
 });
+
+import { fitFast } from './fit.js';
+import { buildRouterMessages } from './router.js';
+test('"search" stays a web search unless it is about this PC', () => {
+  for (const t of ['search trigger trailer', 'search best movies 2026', 'google latest movies in my folder', 'search cats in chrome', 'search movies online', 'search the history of rome'])
+    assert.equal(parseIntent(t).action, 'search_web', t);
+  for (const t of ['search in movie folder and tell me latest movies i added there', 'search my downloads for cv', 'search on my pc for invoice', 'search the movies folder for trigger'])
+    assert.notEqual(parseIntent(t).action, 'search_web', t);
+});
+test('media: filler words dropped, "in <app>" opens it with that app', () => {
+  assert.deepEqual(parseIntent('open film called trigger in  trigger ep 1 in potplayer').params, { query: 'trigger ep 1', media: true, with: 'potplayer' });
+  assert.deepEqual(parseIntent('play trigger ep 1 in vlc').params, { query: 'trigger ep 1', media: true, with: 'vlc' });
+  assert.deepEqual(parseIntent('open movie free guy').params, { query: 'free guy', media: true });
+  assert.ok(isFileTask('open fiml called trigger in potplayer'));
+  assert.ok(!isFileTask('open spotify'));
+});
+test('router: whole request only', () => {
+  assert.match(buildRouterMessages([], 'x')[0].content, /WHOLE request/);
+});
+test('fitFast shrinks old steps under the fast cap, never the tasks', () => {
+  const h = [{ role: 'system', content: 's'.repeat(9000) }, { role: 'user', content: 'open trigger' }, { role: 'assistant', content: 'a'.repeat(5000) },
+    { role: 'user', content: 'r'.repeat(5000) }, { role: 'user', content: 'Episode 1' }];
+  fitFast(h, [1, 4]);
+  assert.ok(JSON.stringify(h).length < 18000);
+  assert.equal(h[0].content.length, 9000); assert.equal(h[1].content, 'open trigger'); assert.equal(h[4].content, 'Episode 1');
+});

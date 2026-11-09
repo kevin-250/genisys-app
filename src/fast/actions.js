@@ -39,18 +39,25 @@ export function pick(matches) {
 export function makeActions(d) {
   const base = (p) => path.basename(p) || p;
   const fall = (reason) => ({ status: 'fall', reason });
-  const openTarget = async (p, resolved) => {
+  const openTarget = async (p, resolved, app) => {
     if (BLOCKED_EXT.test(p)) return fall(`not opening ${base(p)} this way (program or script file)`);
+    if (app) { // "… in potplayer": that app instead of the default program
+      const exe = d.resolveApp(String(app).toLowerCase().trim());
+      if (!exe) return fall(`${app} was not found on this PC`);
+      d.spawnDetached(exe, [p]);
+      return { status: 'done', message: `opened ${p} with ${app}`, resolved };
+    }
     const err = await d.shell.openPath(p);
     return err ? fall(`could not open ${base(p)}: ${err}`) : { status: 'done', message: `opened ${p}`, resolved };
   };
-  const choose = async (matches, label) => {
+  const choose = async (matches, label, app) => {
     const r = pick(matches);
+    const at = (p) => ({ path: p, ...(app && { with: app }) });
     if (r.kind === 'none') return fall(`no ${label} matched`);
-    if (r.kind === 'one') return openTarget(r.match.path, { action: 'open_path', params: { path: r.match.path } });
+    if (r.kind === 'one') return openTarget(r.match.path, { action: 'open_path', params: at(r.match.path) }, app);
     return {
       status: 'choose', message: r.matches.length > 1 ? 'found a few, which one?' : 'is this the one?',
-      options: r.matches.map((m) => ({ label: base(m.path), detail: m.path, action: 'open_path', params: { path: m.path } })),
+      options: r.matches.map((m) => ({ label: base(m.path), detail: m.path, action: 'open_path', params: at(m.path) })),
     };
   };
   const viaBrowser = async (url, browser) => {
@@ -92,15 +99,15 @@ export function makeActions(d) {
       const r = await d.findFiles({ name, kind: 'dir' });
       return choose(r.matches, 'folder');
     },
-    async open_file({ query, ext, media: m }) {
+    async open_file({ query, ext, media: m, with: app }) {
       const media = m === true || m === 'true';
       if (!String(query || '').trim()) return fall('no file name');
       const r = await d.findFiles({ name: query, kind: 'file', ext: ext || (media ? MEDIA_EXT : undefined) });
-      return choose(r.matches, 'file');
+      return choose(r.matches, 'file', app);
     },
-    async open_path({ path: p }) {
+    async open_path({ path: p, with: app }) {
       if (!p || !d.exists(p)) return fall('that path no longer exists');
-      return openTarget(p);
+      return openTarget(p, undefined, app);
     },
     // ---- file actions (Stage 7). All paths must be inside the allowed folders.
     async create_file({ path: p, content = '' }) {

@@ -38,6 +38,18 @@ const TYPE_WORDS = /\b(?:movie|film|video|file|document|doc|song|track)\b/g;
 const EXT = /\.(mp4|mkv|avi|mov|wmv|webm|mp3|flac|wav|m4a|pdf|docx?|xlsx?|pptx?|txt|csv|png|jpe?g|gif|zip)$/i;
 const URL_RE = /^(?:https?:\/\/\S+|www\.\S+|[a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)*\.(?:com|org|net|io|rw|co|dev|app|ai|edu|gov|info|tv|me|ly|uk)(?:[/?#]\S*)?)$/i;
 const MULTI = /\b(and|then|after|also|before)\b|,|;/;
+// "search …" is a web search unless it is clearly about this PC ("in my movie folder", "on my pc") or wants an answer back.
+const PC_SEARCH = /\b(?:my|this)\s+(?:\w+\s+)?(?:files?|folders?|downloads?|documents?|desktop|videos?|movies?|films?|music|songs?|pictures?|photos?|pc|computer|laptop|drive)\b|\b(?:in|inside|from|across|through)\s+(?:the\s+)?\w*\s*(?:folders?|director(?:y|ies)|downloads|documents|desktop|videos|pictures|music)\b|\b(?:folders?|director(?:y|ies)|file\s+(?:manager|explorer))\b|\band\s+(?:tell|show|see|list|give)\b/;
+const WEB_HINT = /\b(?:online|on the (?:internet|web)|the web|internet)\b/;
+const FILLER = new Set(['called', 'named', 'titled', 'the', 'in', 'of']);
+// "film called trigger ep 1 in potplayer" -> { q: 'trigger ep 1', with: 'potplayer' }
+function mediaQuery(rest) {
+  let w = null;
+  const m = rest.match(/\s+(?:in|with|using|on)\s+([a-z0-9][\w.-]*(?:\s[a-z0-9][\w.-]*)?)$/);
+  if (m && !/\b(?:my|folders?|downloads|documents|desktop|videos|pictures|music|pc|computer)\b/.test(m[1]) && !MEDIA_WORDS.test(m[1])) { w = APP_ALIASES[m[1]] || m[1]; rest = rest.slice(0, m.index); }
+  const words = rest.replace(new RegExp(MEDIA_WORDS, 'g'), ' ').replace(TYPE_WORDS, ' ').split(/\s+/).filter((x) => x && !FILLER.has(x));
+  return { q: [...new Set(words)].join(' '), with: w };
+}
 
 const out = (action, params, confidence, normalized, reason) => ({ action, params, confidence, normalized, reason });
 const unknown = (n, confidence, reason) => out('unknown', {}, confidence, n, reason);
@@ -96,6 +108,7 @@ export function parseIntent(text) {
     if (bm0) searchRest = searchRest.slice(0, bm0.index).trim();
     const sm = searchRest.match(new RegExp(`\\s+(?:on|in|at)\\s+(${SEARCH_SITES.join('|')})$`));
     if (sm) { site = sm[1]; searchRest = searchRest.slice(0, sm.index).trim(); }
+    if (!browser && !site && words[0] !== 'google' && !WEB_HINT.test(restRaw) && PC_SEARCH.test(restRaw)) return unknown(n, 0.4, 'search on this PC: the AI decides');
     const query = cleanQuery(searchRest);
     if (!query) return unknown(n, 0.1, 'nothing to search for');
     const params = { query };
@@ -110,8 +123,8 @@ export function parseIntent(text) {
 
   if (v.verb === 'play') {
     if (/\s+(?:on|in|using|with)\s+(spotify|youtube|apple music|deezer|soundcloud|netflix)$/.test(rest)) return unknown(n, 0.4, 'play inside an app needs the AI');
-    const q = rest.replace(TYPE_WORDS, ' ').replace(/\s+/g, ' ').trim();
-    return q ? out('open_file', { query: q, media: true }, 0.8 - typoPenalty, n, 'play a local media file') : unknown(n, 0.2, 'nothing to play');
+    const { q, with: app } = mediaQuery(rest);
+    return q ? out('open_file', { query: q, media: true, ...(app && { with: app }) }, 0.8 - typoPenalty, n, 'play a local media file') : unknown(n, 0.2, 'nothing to play');
   }
 
   // v.verb === 'open'
@@ -124,8 +137,9 @@ export function parseIntent(text) {
   if (fm) return out('open_folder', { name: fm[1].replace(TYPE_WORDS, ' ').trim() }, 0.82 - typoPenalty, n, 'named folder');
   const ext = target.match(EXT);
   if (MEDIA_WORDS.test(target) || ext || /^file\s/.test(target)) {
-    const q = target.replace(MEDIA_WORDS, ' ').replace(TYPE_WORDS, ' ').replace(/\s+/g, ' ').trim();
+    const { q, with: app } = ext ? { q: target.replace(TYPE_WORDS, ' ').replace(/\s+/g, ' ').trim() } : mediaQuery(target);
     const params = { query: ext ? q.replace(EXT, '').trim() || q : q, media: MEDIA_WORDS.test(target) };
+    if (app) params.with = app;
     if (ext) params.ext = ext[1].toLowerCase();
     return q ? out('open_file', params, 0.85 - typoPenalty, n, 'open a file') : unknown(n, 0.2, 'no file name');
   }
@@ -157,4 +171,7 @@ export function splitTask(text) {
 
 // Is this task about the user's files or folders? Only then does the AI get the folder map (smaller, faster prompts).
 const FILE_TASK = /\b(?:files?|folders?|director(?:y|ies)|documents?|docs?|pdfs?|downloads?|desktop|pictures?|photos?|images?|screenshots?|videos?|movies?|films?|music|songs?|episodes?|mp3|mp4|mkv|excel|spreadsheets?|word\s+doc|zip|rar|backup|rename|move|copy|delete|remove|find|search\s+(?:my|for\s+my)|organi[sz]e|sort|clean\s*up|save|onedrive)\b|[a-z]:\|\.(?:pdf|docx?|xlsx?|pptx?|txt|csv|jpe?g|png|mp4|mkv|mp3|zip)\b/i;
-export const isFileTask = (text) => FILE_TASK.test(String(text || ''));
+const FILE_WORDS = ['film', 'movie', 'folder', 'file', 'video', 'episode', 'download', 'document', 'picture', 'music'];
+// Typos too ("open fiml called trigger"), so the AI still gets the folder map.
+export const isFileTask = (text) => FILE_TASK.test(String(text || '')) ||
+  normalize(text).split(' ').some((w) => w.length >= 4 && FILE_WORDS.some((f) => typoDistance(w, f) <= (f.length >= 6 ? 2 : 1)));
