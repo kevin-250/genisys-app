@@ -13,6 +13,7 @@ import { mountDots } from './dots.js';
 import { ANIM } from './anim.js';
 import { cookbookHints } from './cookbook.js';
 import { parseIntent, FAST_MIN, splitTask } from './fast/intent.js';
+import { controlsHelp } from './fast/system.js';
 import { cacheLookup, cacheStore, cacheKey } from './fast/cache.js';
 import { buildRouterMessages, validateRouterReply } from './fast/router.js';
 import { buildScriptMessages, extractScript } from './fast/scriptFallback.js';
@@ -341,8 +342,11 @@ If the work is small or can't be split (one quick action, one lookup, one file),
 BROWSER AGENT: you were opened with /browser, so you work on the INTERNET. Use "web" search/read for facts, prices, docs and news, and open sites for the user with start "" "<url>". Prefer web actions over local commands, finish with a short answer.`;
   const CHILD = `
 TEAM MEMBER: you are one of several agents working in parallel for a manager. Do ONLY the job you were given, don't ask the user questions unless you are truly blocked, and finish with ONE short result line in "say" (what you found or made, with the key facts) so the manager can report it.`;
-  const prompt = (mode === 'script' ? SYSTEM + SCRIPT : SYSTEM) + (canDelegate ? TEAM : '') + (webMode ? BROWSER : '') + (isChild ? CHILD : '');
+  const PC_CONTROLS = `
+BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a cmd): add "do": {"action":"pc","params":{"do":"<control>","value":<number>,"name":"<text>"}} to your JSON. One per reply; it runs before any cmd. value = level/minutes/step when needed; name = app (close_app) or Settings page (open_settings). Risky ones ask the user by themselves. Controls: ${controlsHelp()}.`;
+  const prompt = (mode === 'script' ? SYSTEM + SCRIPT : SYSTEM) + (mode === 'script' ? '' : PC_CONTROLS) + (canDelegate ? TEAM : '') + (webMode ? BROWSER : '') + (isChild ? CHILD : '');
   const history = [{ role: 'system', content: prompt }];
+  const taskStarts = []; // where each task began in history (for trimming; never sent to the AI)
   let running = false;
   let abort = null; // rejects the in-flight AI wait when the user presses stop
   const setRun = (v) => { running = v; $('form').classList.toggle('busy', v); $('send').title = v ? 'Stop' : 'Send (Enter)'; };
@@ -567,11 +571,12 @@ TEAM MEMBER: you are one of several agents working in parallel for a manager. Do
   const PROB = {
     offline: ['You are offline', "Genisys can't reach the internet right now. Check your Wi-Fi or cable. Things you've done before still work without it.", '<path d="M2 8.8a15 15 0 0 1 4-2.6M22 8.8a15 15 0 0 0-8.6-4.3M5 12.9a10 10 0 0 1 3-1.8M19 12.9a10 10 0 0 0-2.4-1.6M8.5 16.4a5 5 0 0 1 7 0M12 20h.01M2 2l20 20"/>'],
     busy: ['The free AI is busy', 'Every free model is at its limit for the moment. Try again in a minute, or add another key in Settings.', '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>'],
+    limit: ["Today's free AI is used up", 'Add your own free key in Settings, under Keys (it takes a minute), or try again tomorrow.', '<circle cx="8" cy="15" r="4"/><path d="m11 12 9-9M16 7l3 3"/>'],
     nokey: ['No API key yet', 'Add a free OpenRouter key in Settings, under Keys, and you are ready to go.', '<circle cx="8" cy="15" r="4"/><path d="m11 12 9-9M16 7l3 3"/>'],
     other: ['That did not work', 'Something got in the way. Try again, and if it keeps happening, say the task a different way.', '<circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16.5v.01"/>'],
   };
   const kindOf = (msg) => !navigator.onLine || /fetch failed|ENOTFOUND|ECONN|ETIMEDOUT|ENETUNREACH|EAI_AGAIN|getaddrinfo|network|socket hang up|ERR_INTERNET|Failed to fetch/i.test(msg) ? 'offline'
-    : /No API key/i.test(msg) ? 'nokey' : /daily limit|rate.?limit|429|busy|quota|exhausted/i.test(msg) ? 'busy' : 'other';
+    : /No API key/i.test(msg) ? 'nokey' : /daily limit/i.test(msg) ? 'limit' : /rate.?limit|429|busy|quota|exhausted/i.test(msg) ? 'busy' : 'other';
   const problem = (msg, retryTask) => {
     const k = kindOf(String(msg)), [t, d, ico] = PROB[k];
     const c = document.createElement('div');
@@ -579,6 +584,12 @@ TEAM MEMBER: you are one of several agents working in parallel for a manager. Do
     c.innerHTML = `<span class="pi"><svg viewBox="0 0 24 24">${ico}</svg></span><div class="pt"><b></b><span></span></div>`;
     c.querySelector('b').textContent = t;
     c.querySelector('.pt span').textContent = d;
+    if (k === 'limit' || k === 'nokey') { // straight to Settings > Keys
+      const kb = document.createElement('button');
+      kb.type = 'button'; kb.className = 'btn primary'; kb.textContent = 'Add a key';
+      kb.onclick = () => (mode === 'main' ? render('keys') : window.api.nav('keys'));
+      c.append(kb);
+    }
     if (retryTask) {
       const b = document.createElement('button');
       b.type = 'button'; b.className = 'btn'; b.textContent = 'Try again';
@@ -905,8 +916,15 @@ TEAM MEMBER: you are one of several agents working in parallel for a manager. Do
     let lastSay = '';
     // Fresh folder snapshot + personality/profile/memory each task.
     const open = ed?.current();
-    history[0].content = `${prompt}\n\n${await promptExtras(task, P)}\n\nPC CONTEXT:\n${await window.api.context()}${open ? `\n\nOPEN IN THE EDITOR (the user may have edited it; build on this version):\n${open.path}\n${open.text.slice(0, 12000)}` : ''}`;
+    history[0].content = `${prompt}\n\n${await promptExtras(task, P)}\n\nPC CONTEXT:\n${await window.api.context(task)}${open ? `\n\nOPEN IN THE EDITOR (the user may have edited it; build on this version):\n${open.path}\n${open.text.slice(0, 12000)}` : ''}`;
     tadd('promptBuild', performance.now() - p0);
+    // Keep the prompt small: system + the last 2 tasks; older tool results cut to 1,500 chars.
+    if (taskStarts.length >= 2) {
+      const cut = taskStarts[taskStarts.length - 2] - 1;
+      if (cut > 0) { history.splice(1, cut); taskStarts.splice(0, taskStarts.length, ...taskStarts.slice(-2).map((i) => i - cut)); }
+    }
+    for (let i = 1; i < history.length; i++) if (!taskStarts.includes(i) && history[i].role === 'user' && history[i].content.length > 1500) history[i].content = `${history[i].content.slice(0, 1500)}\n…(cut)`;
+    taskStarts.push(history.length);
     history.push({ role: 'user', content: want ? `${task}\n\n[The user asked for ${want.n} agents${want.web ? ' that work on the web' : ''} for this. Split the work into exactly ${want.n} independent jobs with "delegate"${want.web ? ' (set web: true on each)' : ''}, unless it is too small to split: then say you'll do it yourself and do it.]` : task });
     // Quick answers by default; deep reasoning only when asked (Settings), for /agent, very long requests, or after a step fails.
     let think = P.deep || !!want || task.split(/\s+/).length > 25;
@@ -1041,6 +1059,17 @@ TEAM MEMBER: you are one of several agents working in parallel for a manager. Do
       }
       const results = [];
       let stepFailed = false;
+      if (reply.do?.action && !stopped) {
+        const pd = { action: String(reply.do.action), params: reply.do.params && typeof reply.do.params === 'object' ? reply.do.params : {} };
+        const say = describe(pd.action, pd.params);
+        live.step('working', say);
+        print('cmd', say, '');
+        let r = await window.api.fast(pd.action, pd.params);
+        if (r.status === 'confirm') r = (await ask(r.preview)) ? await window.api.fast(pd.action, pd.params, true) : { status: 'refused' };
+        if (r.status === 'done') { print('out', r.message, ''); results.push(`Done: ${r.message}`); webSteps++; }
+        else if (r.status === 'refused') results.push('The user said no to that. Choose another way or finish.');
+        else { results.push(`That built-in control failed: ${r.reason || r.message || 'unknown'}. Try another way.`); stepFailed = true; }
+      }
       if (reply.app?.name && !stopped) {
         live.step('opening app', reply.app.name);
         print('cmd', `Opening ${reply.app.name}${reply.app.file ? ` with ${reply.app.file}` : ''}`, 'app');
@@ -1131,7 +1160,7 @@ TEAM MEMBER: you are one of several agents working in parallel for a manager. Do
         }
       }
       // A reply with no action (just chat, e.g. "hi") is the answer: finish instead of asking the model again and again.
-      if (!results.length && !reply.cmd?.trim() && !reply.file?.path && !reply.web && !reply.find && !reply.app && !reply.trash?.length && !reply.restore) { tick(Infinity); break; }
+      if (!results.length && !reply.cmd?.trim() && !reply.file?.path && !reply.web && !reply.find && !reply.app && !reply.do && !reply.trash?.length && !reply.restore) { tick(Infinity); break; }
       if (stepFailed) {
         fails++;
         if (fails >= 20) {

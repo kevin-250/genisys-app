@@ -154,3 +154,7 @@ export function splitTask(text) {
   const parts = String(text || '').split(/\s*(?:,|;|\band then\b|\bthen\b|\band\b|&)\s*/i).map((s) => s.trim()).filter(Boolean);
   return parts.length >= 2 && parts.length <= 4 ? parts : null;
 }
+
+// Is this task about the user's files or folders? Only then does the AI get the folder map (smaller, faster prompts).
+const FILE_TASK = /\b(?:files?|folders?|director(?:y|ies)|documents?|docs?|pdfs?|downloads?|desktop|pictures?|photos?|images?|screenshots?|videos?|movies?|films?|music|songs?|episodes?|mp3|mp4|mkv|excel|spreadsheets?|word\s+doc|zip|rar|backup|rename|move|copy|delete|remove|find|search\s+(?:my|for\s+my)|organi[sz]e|sort|clean\s*up|save|onedrive)\b|[a-z]:\|\.(?:pdf|docx?|xlsx?|pptx?|txt|csv|jpe?g|png|mp4|mkv|mp3|zip)\b/i;
+export const isFileTask = (text) => FILE_TASK.test(String(text || ''));

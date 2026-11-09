@@ -131,6 +131,27 @@ export class PathIndex {
     return out;
   }
 
+  /** Compact tree of the user's FOLDER names (no files), for the AI on file tasks. Each root gets a fair share of maxChars. */
+  folderMap(roots, maxChars = 3000) {
+    const have = roots.filter((r) => this.dirs.has(r));
+    const per = Math.max(250, Math.floor(maxChars / Math.max(1, have.length)));
+    return have.map((root) => {
+      let block = `${root}\n`;
+      const walk = (dir, depth) => {
+        const kids = (this.dirs.get(dir)?.kids || []).filter((k) => k.d);
+        for (let i = 0; i < kids.length; i++) {
+          const line = `${'  '.repeat(depth)}${kids[i].n}\n`;
+          if (block.length + line.length > per) { block += `${'  '.repeat(depth)}(+${kids.length - i} more)\n`; return false; }
+          block += line;
+          if (depth < 3 && walk(path.join(dir, kids[i].n), depth + 1) === false) return false;
+        }
+        return true;
+      };
+      walk(root, 1);
+      return block.trimEnd();
+    }).join('\n');
+  }
+
   toJSON() { return { v: 1, t: this.scannedAt, dirs: [...this.dirs].map(([d, r]) => [d, r.m, r.kids]), apps: this.apps.map((a) => ({ name: a.n, path: a.p })) }; }
   static fromJSON(j) {
     const x = new PathIndex();

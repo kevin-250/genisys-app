@@ -148,6 +148,7 @@ async function settingsTab(root) {
     </section>
     <section class="sg"><h3>App</h3>
       <div class="srow"><div><b>Start with Windows</b><span>Opens Genisys quietly when you sign in. <em id="as-note"></em></span></div><label class="tg"><input type="checkbox" name="autostart"><i></i></label></div>
+      <div class="srow"><div><b>Automatic updates</b><span>Genisys checks twice a day and installs new versions by itself, while you are not using it.</span></div><label class="tg"><input type="checkbox" name="autoUpdate"><i></i></label></div>
       <div class="srow"><div><b>Send error reports</b><span>When something breaks, the error message and app version go to the developer. Your user folder and name are removed first.</span></div><label class="tg"><input type="checkbox" name="sendErrors"><i></i></label></div>
     </section>
     <div class="savebar"><button class="btn primary">Save settings</button> <span id="saved" class="muted"></span></div>`;
@@ -189,6 +190,7 @@ async function settingsTab(root) {
   f.custom.value = P.custom;
   f.autostart.checked = autostart;
   f.sendErrors.checked = await window.api.db('getSetting', 'sendErrors', false);
+  f.autoUpdate.checked = (await window.api.db('getSetting', 'autoUpdate', true)) !== false;
   f.speed.checked = (await window.api.db('getSetting', 'speedMode', 'new')) === 'new';
   const paintSpeed = async () => {
     const n = await window.api.db('cacheCount');
@@ -223,6 +225,7 @@ async function settingsTab(root) {
     });
     await window.api.db('setSetting', 'speedMode', f.speed.checked ? 'new' : 'old');
     await window.api.db('setSetting', 'sendErrors', f.sendErrors.checked);
+    await window.api.db('setSetting', 'autoUpdate', f.autoUpdate.checked);
     const packaged = await window.api.autostart(f.autostart.checked);
     $('as-note').textContent = packaged ? '' : 'Applies in the installed app only.';
     $('saved').textContent = 'saved ✓ applies to the next task in every window';

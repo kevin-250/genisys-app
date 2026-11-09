@@ -17,6 +17,9 @@ import { parseLog, formatStats } from './fast/stats.js';
 import * as cloud from './cloud.js';
 import { createHelper } from './fast/helper.js';
 import { makeSystem } from './fast/system.js';
+import { isFileTask } from './fast/intent.js';
+import { startUpdater } from './updater.js';
+import { newer } from './version.js';
 
 // Diagnostics: if the app ever exits on its own, say who asked for it and why (also saved to %TEMP%\genisys-debug.log).
 const dlog = (...a) => { const line = `[${new Date().toISOString()}] ${a.join(' ')}`; console.log('[genisys]', line); try { fs.appendFileSync(path.join(os.tmpdir(), 'genisys-debug.log'), line + '\n'); } catch {} };
@@ -28,11 +31,12 @@ const realQuit = app.quit.bind(app);
 app.quit = () => { dlog('app.quit called from', new Error().stack.split('\n').slice(2, 5).join(' | ')); realQuit(); };
 dlog('starting; started =', started, '; packaged =', app.isPackaged);
 if (started) app.quit();
+const PREPARE = process.argv.includes('--prepare');
 // Launching again (e.g. desktop shortcut) just brings the running app forward.
 // (Dev runs skip the lock: an installed/background Genisys would make `npm start` exit silently.)
 // Genisys keeps running in the tray after its window is closed, so a second launch hands over to the running copy
 // (its 'second-instance' handler shows the window) and exits.
-if (app.isPackaged && !app.requestSingleInstanceLock()) app.exit(0);
+if (app.isPackaged && !PREPARE && !app.requestSingleInstanceLock()) app.exit(0);
 app.on('second-instance', () => mainWin && showMain());
 
 // Always-ready hidden PowerShell (volume, PC controls, short AI PowerShell commands): no 1-3 s startup per command.
@@ -274,25 +278,27 @@ ipcMain.handle('freeModels', async () => {
 });
 
 // Snapshot of the user's real folders so the AI can resolve "movie folder in videos" without searching.
-ipcMain.handle('context', () => {
-  const dirs = (dir) => {
-    try {
-      return fs.readdirSync(dir, { withFileTypes: true })
-        .filter((d) => d.isDirectory() && !/^[.$]/.test(d.name)).map((d) => d.name).slice(0, 40);
-    } catch { return []; }
-  };
-  // Two levels deep, e.g. "KEVIN (PROJECTS, NOTES)", so nested folders resolve in one step.
-  const tree = (dir) => dirs(dir).map((n) => {
-    const kids = dirs(path.join(dir, n)).slice(0, 15);
-    return kids.length ? `${n} (${kids.join(', ')})` : n;
-  }).join(', ');
-  const lines = ['home', 'desktop', 'documents', 'downloads', 'videos', 'pictures', 'music'].map((k) => {
-    const p = app.getPath(k);
-    return `${k}: ${p}\n  contains: ${(k === 'home' ? dirs(p).join(', ') : tree(p)) || '(none)'}`;
-  });
+// What the AI knows about this PC. Always a short line; for tasks about files/folders also the user's folder map
+// (folder names only, captured at install and kept fresh) and the few files whose names match the task.
+ipcMain.handle('context', (_e, task = '') => {
   const drives = 'CDEFGHIJ'.split('').filter((d) => fs.existsSync(`${d}:\\`)).map((d) => `${d}:`).join(' ');
-  return `User: ${os.userInfo().username} on ${os.hostname()}, ${new Date().toString()}\nDrives: ${drives}\n${lines.join('\n')}`;
+  const where = ['home', 'desktop', 'documents', 'downloads', 'videos', 'pictures', 'music'].map((k) => `${k}=${app.getPath(k)}`).join('; ');
+  const head = `User: ${os.userInfo().username} on ${os.hostname()}, ${new Date().toString()}\nDrives: ${drives}\nFolders: ${where}`;
+  if (!isFileTask(task)) return head;
+  if (!pindex.ready) return `${head}\n${legacyTree()}`;
+  const roots = [...new Set([...homeDirs(), path.join(os.homedir(), 'OneDrive'), ...myPaths().roots])].filter((r) => pindex.dirs.has(r));
+  const hits = pindex.contextFor(task);
+  const files = Object.entries(hits).map(([k, v]) => `${k.replace(/_/g, ' ')}: ${v.join(' | ')}`).join('\n');
+  return `${head}\nUSER FOLDER MAP (folder names only):\n${pindex.folderMap(roots, 3000)}${files ? `\nMATCHING THIS TASK:\n${files}` : ''}`;
 });
+// Before the index exists: the old two-level folder listing.
+function legacyTree() {
+  const dirs = (dir) => { try { return fs.readdirSync(dir, { withFileTypes: true }).filter((d) => d.isDirectory() && !/^[.$]/.test(d.name)).map((d) => d.name).slice(0, 40); } catch { return []; } };
+  return ['desktop', 'documents', 'downloads', 'videos', 'pictures', 'music'].map((k) => {
+    const p = app.getPath(k);
+    return `${k} contains: ${dirs(p).map((n) => { const kids = dirs(path.join(p, n)).slice(0, 15); return kids.length ? `${n} (${kids.join(', ')})` : n; }).join(', ') || '(none)'}`;
+  }).join('\n');
+}
 
 // Key + model rotation. A daily-limit error ("free-models-per-day") is account-wide, so that key rests until 00:00 UTC and the
 // next key takes over. A busy/rate-limited model (or provider hiccup) is NOT the key's fault: try the next model on the same key
@@ -716,7 +722,7 @@ const scanSystem = () => {
   const dir = path.join(process.env.windir || 'C:\\Windows', 'System32');
   try { return fs.readdirSync(dir).filter((n) => /\.exe$/i.test(n)).map((n) => ({ n, l: n.toLowerCase(), p: path.join(dir, n), e: 'exe', t: 'file' })); } catch { return []; }
 };
-async function startIndex(force) {
+async function startIndex(force, deadline = 0) {
   if (indexBusy) return;
   indexBusy = true;
   try {
@@ -728,7 +734,8 @@ async function startIndex(force) {
     pindex.setApps(scanApps());
     pindex.setSystem(scanSystem());
     const roots = [...new Set([...homeDirs(), path.join(os.homedir(), 'OneDrive'), ...mp.roots])].filter((r) => fs.existsSync(r));
-    await pindex.scan(roots, fs.promises);
+    await pindex.scan(roots, fs.promises, deadline ? { isStopped: () => Date.now() > deadline } : {});
+    if (deadline && Date.now() > deadline) pindex.scannedAt = 0; // cut short: the app finishes it on first launch
     fs.writeFileSync(file, JSON.stringify(pindex.toJSON()));
     dlog('path index ready:', pindex.count, 'entries');
   } catch (e) { dlog('path index failed', e?.message); } finally { indexBusy = false; }
@@ -1061,7 +1068,34 @@ app.setPath('userData', path.join(app.getPath('appData'), 'Executor'));
 // Lighter: no spare renderer process, capped JS heap.
 app.commandLine.appendSwitch('disable-features', 'SpareRendererForSitePerProcess');
 app.commandLine.appendSwitch('js-flags', '--max-old-space-size=256');
+// PC specs (no personal data): kept in pc-specs.json for future features and sent with the account so the developer sees them.
+async function readSpecs() {
+  const cpus = os.cpus();
+  const d = screen.getPrimaryDisplay();
+  let gpu = '';
+  try { gpu = (await app.getGPUInfo('complete'))?.auxAttributes?.glRenderer || ''; } catch {}
+  let disk = null;
+  try { const st = fs.statfsSync('C:\\'); disk = { sizeGB: Math.round((st.blocks * st.bsize) / 1073741824), freeGB: Math.round((st.bavail * st.bsize) / 1073741824) }; } catch {}
+  return {
+    os: `${os.version()} (${os.release()})`, cpu: (cpus[0]?.model || '').trim(), cores: cpus.length,
+    ramGB: Math.round(os.totalmem() / 1073741824), gpu: gpu.replace(/^ANGLE \((.*)\)$/, '$1').slice(0, 120),
+    screen: `${Math.round(d.size.width * d.scaleFactor)}x${Math.round(d.size.height * d.scaleFactor)}`, disk, app: app.getVersion(), at: Date.now(),
+  };
+}
+const specsFile = () => path.join(app.getPath('userData'), 'pc-specs.json');
+const saveSpecs = async () => { const sp = await readSpecs(); fs.mkdirSync(path.dirname(specsFile()), { recursive: true }); fs.writeFileSync(specsFile(), JSON.stringify(sp)); return sp; };
+
+// Installer step: capture the folder tree + specs before the first launch, then exit. Never holds the installer > 60 s.
+async function prepare() {
+  const hard = setTimeout(() => app.exit(0), 60000);
+  try { await saveSpecs(); } catch (e) { dlog('prepare specs failed', e?.message); }
+  try { await startIndex(true, Date.now() + 50000); } catch (e) { dlog('prepare index failed', e?.message); }
+  clearTimeout(hard);
+  app.exit(0);
+}
+
 app.whenReady().then(() => {
+  if (PREPARE) return prepare();
   dlog('ready');
   // productName changed my-app → Executor, which moved userData; carry the API key over once.
   const cfg = path.join(app.getPath('userData'), 'config.json');
@@ -1142,8 +1176,30 @@ app.whenReady().then(() => {
     { label: 'Quit Genisys', click: () => app.quit() },
   ]));
   tray.on('click', showMain);
-  setTimeout(() => startIndex(), 15000); // low-priority background scan, 15 s after start
+  // Folder tree: saved by the installer; without it (portable zip, cut-short scan) build it right away.
+  setTimeout(() => startIndex(), fs.existsSync(path.join(userDir(), 'path-index.json')) ? 15000 : 1500);
+  setInterval(() => startIndex(), 6 * 3600e3); // keep it fresh (unchanged folders are reused, so this is cheap)
+  // Specs: refresh after an update, and let the account know (admin › Users).
+  setTimeout(async () => {
+    try {
+      const old = JSON.parse(fs.readFileSync(specsFile(), 'utf8'));
+      if (old.app === app.getVersion()) return;
+    } catch {}
+    try { await saveSpecs(); cloud.sendSpecs(); } catch (e) { dlog('specs failed', e?.message); }
+  }, 20000);
   setTimeout(() => helper.warm(), 10000); // so the first volume / PC control is instant
+  // Automatic updates: installs only while no Genisys window is open on screen (Settings › Automatic updates).
+  startUpdater({
+    log: dlog,
+    enabled: () => db.getSetting('autoUpdate', true) !== false,
+    isIdle: () => BrowserWindow.getAllWindows().every((w) => w.isDestroyed() || !w.isVisible()),
+    report: (e) => cloud.reportError('error', e),
+  });
+  {
+    const prev = db.getSetting('lastVersion', null);
+    if (prev && newer(app.getVersion(), prev) && Notification.isSupported()) new Notification({ title: `Genisys updated to v${app.getVersion()}`, body: 'New version installed. Everything you saved is still here.', icon: path.join(ASSETS, 'icon.png') }).show();
+    db.setSetting('lastVersion', app.getVersion());
+  }
   dlog('main window created');
 }).catch((e) => { dlog('startup failed', e?.stack || e); cloud.reportError('crash', e); });
 let quitting = false, tray = null; // tray: kept in a variable so it is not garbage-collected (the icon would vanish)

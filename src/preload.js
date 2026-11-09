@@ -29,7 +29,7 @@ contextBridge.exposeInMainWorld('api', {
   closeAgent: (id) => ipcRenderer.send('closeAgent', id),
   onAgents: (cb) => ipcRenderer.on('agents', (_e, list) => cb(list)),
   config: () => ipcRenderer.invoke('config'),
-  context: () => ipcRenderer.invoke('context'),
+  context: (task) => ipcRenderer.invoke('context', task), // folder map only for file tasks
   ai: (messages, think, opts) => ipcRenderer.invoke('ai', messages, think, opts),
   openPath: (p) => ipcRenderer.invoke('openPath', p),
   find: (opts) => ipcRenderer.invoke('find', opts),

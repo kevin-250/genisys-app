@@ -61,3 +61,19 @@ test('two-part commands split, and every part must be understood', () => {
   const cats = splitTask('search cats and dogs').map((p) => parseIntent(p));
   assert.ok(!cats.every((r) => r.action !== 'unknown' && r.confidence >= 0.75), 'dogs alone is not a command');
 });
+
+import { isFileTask } from './intent.js';
+import { PathIndex } from './index.js';
+test('folder map only for file tasks, and it stays small', () => {
+  for (const t of ['move the pdfs in downloads to documents', 'find my cv.docx', 'open my school folder', 'delete old screenshots']) assert.ok(isFileTask(t), t);
+  for (const t of ['open spotify', 'what is the weather', 'volume 40', 'tell me a joke']) assert.ok(!isFileTask(t), t);
+  const x = new PathIndex();
+  const kids = (n) => Array.from({ length: n }, (_, i) => ({ n: `Folder ${i}`, d: true }));
+  const docs = String.raw`C:\U\Documents`;
+  x.dirs = new Map([[docs, { m: 1, kids: [...kids(500), { n: 'a.txt', d: false }] }], [String.raw`C:\U\Documents\Folder 0`, { m: 1, kids: kids(3) }]]);
+  const map = x.folderMap([docs, String.raw`C:\U\Missing`], 1000);
+  assert.ok(map.length <= 1100, `map is ${map.length} chars`);
+  assert.ok(map.startsWith(`${docs}\n  Folder 0\n    Folder 0\n`), map.slice(0, 80));
+  assert.match(map, /\(\+\d+ more\)/);
+  assert.ok(!map.includes('a.txt'), 'files are never listed');
+});

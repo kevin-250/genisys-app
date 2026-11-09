@@ -58,7 +58,11 @@ Filename: "{app}\install.ini"; Section: "install"; Key: "stamp"; String: "{code:
 Filename: "{sys}\taskkill.exe"; Parameters: "/im {#AppExe} /f"; Flags: runhidden; RunOnceId: "KillGenisys"
 
 [Run]
+; Fresh install: capture the user folder tree + PC specs before the first launch (hidden, at most 60 s).
+Filename: "{app}\{#AppExe}"; Parameters: "--prepare"; StatusMsg: "Preparing your folders..."; Flags: runhidden waituntilterminated; Check: IsFreshInstall
 Filename: "{app}\{#AppExe}"; Description: "Launch {#AppName}"; Flags: nowait postinstall skipifsilent
+; Silent auto-update: start Genisys again quietly in the tray.
+Filename: "{app}\{#AppExe}"; Parameters: "--autostart"; Flags: nowait; Check: WizardSilent
 
 [Code]
 const
@@ -165,7 +169,7 @@ begin
   end;
 
   if not ReadInstall(Mine, Ver, Dir) then Exit;   // not installed: normal full wizard
-  if WizardSilent then Exit;                      // /SILENT and /VERYSILENT: install/update, no questions
+  if WizardSilent then begin UpdateMode := True; Exit; end; // /SILENT, /VERYSILENT (auto-update): update in place, keep the install stamp
 
   Cmp := CompareVer('{#AppVersion}', Ver);
   if Cmp > 0 then

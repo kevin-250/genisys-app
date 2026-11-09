@@ -41,14 +41,23 @@ export async function register(acc) {
   db.setSetting('account', account);
   db.setSetting('sendErrors', !!acc.sendErrors);
   db.setSetting('onboardedStamp', installStamp());
-  try { await post('register', account); db.setSetting('pendingRegister', false); return { sent: true }; }
+  try { await post('register', { ...account, specs: specs() }); db.setSetting('pendingRegister', false); return { sent: true }; }
   catch { db.setSetting('pendingRegister', true); return { sent: false }; }
+}
+
+// PC specs saved at install (pc-specs.json): Windows version, CPU, RAM, GPU, screen, disk. No personal data.
+const specs = () => { try { return JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'pc-specs.json'), 'utf8')); } catch { return undefined; } };
+
+/** After an update: send the refreshed specs with the existing account (shown in admin > Users). */
+export async function sendSpecs() {
+  const account = db.getSetting('account', null);
+  if (account?.email) try { await post('register', { ...account, specs: specs() }); } catch {}
 }
 
 /** Startup: finish a sign-up that happened offline. */
 export async function flushPending() {
   if (!db.getSetting('pendingRegister', false)) return;
-  try { await post('register', db.getSetting('account', {})); db.setSetting('pendingRegister', false); } catch {}
+  try { await post('register', { ...db.getSetting('account', {}), specs: specs() }); db.setSetting('pendingRegister', false); } catch {}
 }
 
 export function sendReport({ type, message, includeEmail }) {
