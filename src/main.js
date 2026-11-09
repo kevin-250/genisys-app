@@ -158,7 +158,7 @@ ipcMain.handle('autostart', (_e, on) => { db.setSetting('autostart', on); setAut
 
 ipcMain.handle('config', () => {
   const { keys, models } = loadConfig();
-  return { model: models[0], models, hasKey: keys.length > 0, keyCount: keys.length, path: cfgPath() };
+  return { dev: !app.isPackaged,  model: models[0], models, hasKey: keys.length > 0, keyCount: keys.length, path: cfgPath() };
 });
 
 // Settings → keys. The page only ever sees masked keys.
@@ -362,7 +362,7 @@ const aiHandler = async (e, messages, think, rec, opts = {}) => {
           headers: { Authorization: `Bearer ${k}`, 'Content-Type': 'application/json' },
           // No response_format: Nemotron Ultra doesn't support it; the renderer extracts the {...} from the reply instead.
           body: JSON.stringify({ model, messages, max_tokens: opts.maxTokens || (think ? 3000 : 1000), reasoning: { enabled: !!think } }),
-          signal: AbortSignal.timeout(opts.fast ? 8000 : think ? 90000 : 60000),
+          signal: AbortSignal.timeout(opts.fast ? 8000 : think ? 60000 : 20000), // a busy free model fails fast; the next one is tried
         });
         data = await res.json().catch(() => ({}));
       } catch (err) { rec.attempts.push({ model, key: n, ms: Date.now() - at, r: err.name === 'TimeoutError' ? 'timeout' : 'error' }); lastErr = `${model}: ${err.name === 'TimeoutError' ? 'timed out' : err.message}`; transient = true; say('slow, switching model…'); continue; }

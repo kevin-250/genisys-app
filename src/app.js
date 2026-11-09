@@ -137,7 +137,10 @@ $('w-close').onclick = () => window.api.win('close');
 $('w-min').onclick = () => window.api.win('min');
 $('w-max').onclick = () => window.api.win('max');
 document.querySelector('.logo').src = logoUrl;
-window.api.config().then(({ model, hasKey, path }) => {
+// Users see meaningful steps only; commands, raw output, exit codes and model names show on dev runs (npm start).
+let DEV = false;
+window.api.config().then(({ model, hasKey, path, dev }) => {
+  DEV = !!dev;
   $('model').textContent = hasKey ? '' : '⚠ add an API key in Settings → keys'; // the model name lives in Settings only
 });
 // Quiet dot-grid behind everything (not in the little runner popup), and a calm offline badge.
@@ -445,7 +448,7 @@ TEAM MEMBER: you are one of several agents working in parallel for a manager. Do
       },
     };
   })();
-  window.api.onAiProgress?.((t) => live.detail(t));
+  window.api.onAiProgress?.((t) => { if (DEV) live.detail(t); }); // model/key switching is internal
 
   // The live orb: big on the welcome screen, then it shrinks into the "working" card while a task runs, then into the header.
   const orbOK = (mode === 'main' || mode === 'agent') && ANIM.orb;
@@ -597,6 +600,7 @@ TEAM MEMBER: you are one of several agents working in parallel for a manager. Do
     log.scrollTop = log.scrollHeight;
     return d;
   };
+  const techPrint = (...a) => (DEV ? print(...a) : null); // internals: dev runs only
   if (mode !== 'runner' && !orbOK) print('dim', mode === 'script' ? 'Describe a script; I will write, save and test it.  F1 for shortcuts.' : 'Tell me what to do on your PC.  F1 for shortcuts.', '');
 
   // Inline Run/Skip prompt so this agent waits without blocking any other window.
@@ -683,7 +687,7 @@ TEAM MEMBER: you are one of several agents working in parallel for a manager. Do
     if (!m) return false;
     if (m.cmds.some(serious)) return false; // serious commands always go through the AI
     if (m.cmds.some((c) => fixCmd(c) !== c)) { await window.api.db('updateMemory', m.id, m.cmds.map(fixCmd)); m.cmds = m.cmds.map(fixCmd); } // repair old saved commands
-    live.start(task); live.step('reusing saved .bat', m.task);
+    live.start(task); live.step(DEV ? 'reusing saved .bat' : 'doing it again', m.task);
     const row = print('mem', 'reused saved .bat · 0 AI requests', '⚡ memory');
     const again = document.createElement('button');
     again.className = 'btn'; again.textContent = 'ask AI instead';
@@ -698,7 +702,7 @@ TEAM MEMBER: you are one of several agents working in parallel for a manager. Do
     if (code) { live.stop(false); print('err', `exit ${code}, asking AI instead`, ''); await window.api.db('useMemory', m.id, false); return false; }
     await window.api.db('useMemory', m.id, true);
     live.stop();
-    print('done', 'done from memory', 'done');
+    print('done', 'done', 'done');
     return true;
   }
 
@@ -725,7 +729,7 @@ TEAM MEMBER: you are one of several agents working in parallel for a manager. Do
     window.api.timing('start');
     const record = (route, action, ok, extra = {}, ms = performance.now() - F0) => window.api.timing('log', { text: task, mode: 'new', route, action, ok, modelCalls: st.calls, steps: 1, totalMs: Math.round(ms), stages: S, ...extra }).catch(() => {});
     const finish = async (route, action, ok, extra = {}, ms = performance.now() - F0) => {
-      if (ok) print('done', `${(ms / 1000).toFixed(2)}s · ${route}`, 'done');
+      if (ok) print('done', DEV ? `${(ms / 1000).toFixed(2)}s · ${route}` : `done in ${(ms / 1000).toFixed(1)}s`, 'done');
       await window.api.db('logTask', title, task, 1, ms / 1000, ok);
       await record(route, action, ok, extra, ms);
       setSt(ok ? 'done' : 'error'); setRun(false);
@@ -777,7 +781,7 @@ TEAM MEMBER: you are one of several agents working in parallel for a manager. Do
         return true;
       }
       if (r.status === 'refused') { print('dim', 'skipped', ''); await finish(route, action, false, { result: 'refused' }); return true; }
-      print('dim', `fast path: ${r.reason || 'no match'}`, '');
+      techPrint('dim', `fast path: ${r.reason || 'no match'}`, '');
       return false;
     };
 
@@ -817,7 +821,7 @@ TEAM MEMBER: you are one of several agents working in parallel for a manager. Do
     let routed = null, lastErr = '', lastRaw = '';
     for (let attempt = 0; attempt < 2 && !routed; attempt++) {
       setSt('thinking');
-      live.start(task); live.step('picking the right action', 'one short AI call');
+      live.start(task); live.step('understanding your request', task);
       t = performance.now(); st.calls++;
       let raw;
       try { raw = await window.api.ai(attempt ? [...msgs, { role: 'assistant', content: lastRaw }, { role: 'user', content: `Invalid (${lastErr}). Reply with ONLY the JSON.` }] : msgs, false, { fast: true, maxTokens: 200, timeoutMs: 5000 }); }
@@ -849,16 +853,16 @@ TEAM MEMBER: you are one of several agents working in parallel for a manager. Do
       if (x.error) { smsgs = [...smsgs, { role: 'assistant', content: raw }, { role: 'user', content: `${x.error}. Output exactly one powershell code block.` }]; continue; }
       const chk = await window.api.scriptCheck(x.script);
       if (chk.level === 'block') { print('err', `blocked, not running it:\n- ${chk.reasons.join('\n- ')}`, 'safety'); await finish('script', 'script', false, { result: 'blocked', script: x.script }); return done(true); }
-      print('cmd', x.script, 'script');
-      if (!(await ask(`AI-written script${chk.reasons.length ? ` (${chk.reasons.join('; ')})` : ''}. Run it?`))) { print('dim', 'skipped', ''); await finish('script', 'script', false, { result: 'refused', script: x.script }); return done(true); }
+      techPrint('cmd', x.script, 'script');
+      if (!(await ask(DEV ? `AI-written script${chk.reasons.length ? ` (${chk.reasons.join('; ')})` : ''}. Run it?` : 'Genisys needs to run a small program on your PC to do this. Go ahead?'))) { print('dim', 'skipped', ''); await finish('script', 'script', false, { result: 'refused', script: x.script }); return done(true); }
       setSt('running');
       t = performance.now();
       const r = await window.api.scriptRun(x.script, true, task);
       mark('exec', t);
-      if (r.status === 'done') { if (r.out.trim()) print('out', r.out.trim(), 'out'); await finish('script', 'script', true, { script: x.script }); return done(true); }
+      if (r.status === 'done') { if (r.out.trim()) techPrint('out', r.out.trim(), 'out'); await finish('script', 'script', true, { script: x.script }); return done(true); }
       if (r.status === 'blocked') { print('err', `blocked: ${r.check.reasons.join('; ')}`, 'safety'); await finish('script', 'script', false, { result: 'blocked', script: x.script }); return done(true); }
-      if (st.calls < 2) { print('dim', 'script failed, trying once more…', ''); smsgs = [...smsgs, { role: 'assistant', content: raw }, { role: 'user', content: `The script failed:\n${String(r.out).slice(0, 500)}\nFix it. Same rules.` }]; continue; }
-      print('err', String(r.out).trim().slice(0, 400) || 'the script failed', 'script');
+      if (st.calls < 2) { techPrint('dim', 'script failed, trying once more…', ''); smsgs = [...smsgs, { role: 'assistant', content: raw }, { role: 'user', content: `The script failed:\n${String(r.out).slice(0, 500)}\nFix it. Same rules.` }]; continue; }
+      print('err', DEV ? String(r.out).trim().slice(0, 400) || 'the script failed' : "Sorry, I couldn't do that one.", 'script');
       await finish('script', 'script', false, { result: 'failed', script: x.script });
       return done(true);
     }
@@ -917,7 +921,7 @@ TEAM MEMBER: you are one of several agents working in parallel for a manager. Do
     const limit = () => Math.max(P.maxSteps, fails >= 3 ? 26 : 0);
     const escalate = async (results) => {
       print('ai', "my bad bro 😅 I've flopped 10 times on this one and that's on me. Swapping to a different brain and asking for a second opinion, hold tight 🔧", '›');
-      live.step('getting a second opinion', 'switching model');
+      live.step('getting a second opinion', DEV ? 'switching model' : 'trying another way');
       think = true;
       try { await window.api.switchModel(); } catch {}
       try {
@@ -964,13 +968,13 @@ TEAM MEMBER: you are one of several agents working in parallel for a manager. Do
         // Busy models / a key running out mid-task: the app already rotates key+model on every call, so just wait a moment and call again.
         if (!stopped && aiFails < 3 && !/daily limit|No API key/i.test(msg)) {
           aiFails++;
-          live.detail(`all models busy, retrying (${aiFails}/3)…`);
-          print('dim', 'switching to another free model…', '');
-          tadd('retryWait', 2500 * aiFails);
-          await new Promise((r) => setTimeout(r, 2500 * aiFails));
+          live.detail(DEV ? `all models busy, retrying (${aiFails}/3)…` : 'still working on it…');
+          techPrint('dim', 'switching to another free model…', '');
+          tadd('retryWait', 1000 * aiFails);
+          await new Promise((r) => setTimeout(r, 1000 * aiFails));
           step--; continue;
         }
-        if (!think && !stopped) { think = true; print('dim', 'trying again, thinking harder…', ''); step--; continue; }
+        if (!think && !stopped) { think = true; techPrint('dim', 'trying again, thinking harder…', ''); step--; continue; }
         problem(e.message.replace(/^Error invoking remote method 'ai': (Error: )?/, ''), task);
         failed = true;
         if (step === 1 && !stopped) offlineOk = await fromMemory(task);
@@ -997,7 +1001,7 @@ TEAM MEMBER: you are one of several agents working in parallel for a manager. Do
       if (reply.learn?.text && P.learning) {
         const kind = ['interest', 'trait', 'fact'].includes(reply.learn.kind) ? reply.learn.kind : 'fact';
         await window.api.db('addProfile', kind, String(reply.learn.text).slice(0, 200));
-        print('dim', `${kind}: ${reply.learn.text}`, 'learned');
+        techPrint('dim', `${kind}: ${reply.learn.text}`, 'learned');
       }
       if (reply.improve) window.api.notify('idea', String(reply.improve).slice(0, 240));
       // Teamwork: open the agent windows, show the team card, and finish this turn (the card tracks them).
@@ -1039,15 +1043,15 @@ TEAM MEMBER: you are one of several agents working in parallel for a manager. Do
       let stepFailed = false;
       if (reply.app?.name && !stopped) {
         live.step('opening app', reply.app.name);
-        print('cmd', `open ${reply.app.name}${reply.app.file ? ` with ${reply.app.file}` : ''}`, 'app');
+        print('cmd', `Opening ${reply.app.name}${reply.app.file ? ` with ${reply.app.file}` : ''}`, 'app');
         const lr = await tm('launchApp', window.api.launchApp(reply.app.name, reply.app.file));
-        if (lr.ok) { ran.push(`start "" "${lr.exe}"${reply.app.file ? ` "${reply.app.file}"` : ''}`); results.push(`Launched ${lr.exe}`); print('out', `launched ${lr.exe}`, 'app'); }
+        if (lr.ok) { ran.push(`start "" "${lr.exe}"${reply.app.file ? ` "${reply.app.file}"` : ''}`); results.push(`Launched ${lr.exe}`); print('out', DEV ? `launched ${lr.exe}` : `${reply.app.name} opened`, 'app'); }
         else { results.push(`${reply.app.name} is NOT installed (checked Start Menu and Program Files). Tell the user; offer an alternative or a download link.`); stepFailed = true; print('err', `${reply.app.name} not found`, 'app'); }
       }
       if (reply.trash?.length && !stopped) {
         const list = [].concat(reply.trash).map(String);
         live.step('moving to the Recycle Bin', `${list.length} item${list.length === 1 ? '' : 's'}`);
-        print('cmd', `trash ${list.map((q) => `"${q}"`).join(' ')}`, 'trash');
+        print('cmd', DEV ? `trash ${list.map((q) => `"${q}"`).join(' ')}` : `Moving ${list.length} item${list.length === 1 ? '' : 's'} to the Recycle Bin`, 'trash');
         if (list.length > 10 && !(await ask(`Move ${list.length} items to the Recycle Bin?`))) { results.push('User refused to trash these. Finish or choose another way.'); allOk = false; }
         else {
           const r = await window.api.trash(list);
@@ -1058,14 +1062,14 @@ TEAM MEMBER: you are one of several agents working in parallel for a manager. Do
       }
       if (reply.restore && !stopped) {
         live.step('restoring from the Recycle Bin', String(reply.restore));
-        print('cmd', `restore "${reply.restore}"`, 'restore');
+        print('cmd', `Restoring "${reply.restore}"`, 'restore');
         const r = await window.api.restoreTrash(String(reply.restore));
         if (r.ok) { results.push(`Restored from the Recycle Bin: ${r.text}`); print('out', 'restored from the Recycle Bin', 'restore'); webSteps++; }
         else { results.push(`Nothing matching "${reply.restore}" in the Recycle Bin (${r.text}). It may have been deleted permanently: offer Windows File Recovery (winfr) or OneDrive/Previous Versions.`); stepFailed = true; print('err', 'not in the Recycle Bin', 'restore'); }
       }
       if (reply.find?.name && !stopped) {
         live.step('searching your files', reply.find.name);
-        print('cmd', `find "${reply.find.name}"${reply.find.in ? ` in ${reply.find.in}` : ''}${reply.find.ext ? ` .${String(reply.find.ext).replace(/^\./, '')}` : ''}`, 'find');
+        print('cmd', DEV ? `find "${reply.find.name}"${reply.find.in ? ` in ${reply.find.in}` : ''}${reply.find.ext ? ` .${String(reply.find.ext).replace(/^\./, '')}` : ''}` : `Looking for "${reply.find.name}"`, 'find');
         try {
           const r = await tm('find', window.api.find(reply.find));
           const [a, b] = r.matches;
@@ -1083,7 +1087,7 @@ TEAM MEMBER: you are one of several agents working in parallel for a manager. Do
             else { ran.push(`start "" "${a.path}"`); results.push(`Found and opened ${a.path}`); print('out', `opened ${a.path}`, 'open'); }
           } else {
             results.push(`find matches (score, path):\n${r.matches.map((m) => `${m.score} ${m.path}`).join('\n')}\n${reply.find.open ? 'Not opened: no single clear best match. Ask the user which one (use options), or pick if obvious.' : ''}`);
-            print('out', r.matches.slice(0, 5).map((m) => `${m.score}  ${m.path}`).join('\n'), 'find');
+            techPrint('out', r.matches.slice(0, 5).map((m) => `${m.score}  ${m.path}`).join('\n'), 'find');
             if (reply.find.open) stepFailed = true;
           }
         } catch (e) { results.push(`find failed: ${e.message}`); stepFailed = true; }
@@ -1098,19 +1102,20 @@ TEAM MEMBER: you are one of several agents working in parallel for a manager. Do
         allOk = false;
       }
       if (reply.cmd?.trim() && !stopped) {
-        live.step('running', reply.cmd);
-        const cmdRow = print('cmd', reply.cmd, `step ${String(ran.length + 1).padStart(2, '0')}`);
+        const plainStep = String(reply.step || '').trim() || 'Working on your PC';
+        live.step('working', DEV ? reply.cmd : plainStep);
+        const cmdRow = print('cmd', DEV ? reply.cmd : plainStep, DEV ? `step ${String(ran.length + 1).padStart(2, '0')}` : '');
         cmdRow.classList.add('running');
         const cmdT0 = Date.now();
         const cmdDone = (okk) => { cmdRow.classList.remove('running'); cmdRow.classList.add(okk ? 'ok' : 'bad'); const t = document.createElement('span'); t.className = 'dur'; t.textContent = `${okk ? '✓' : '✗'} ${((Date.now() - cmdT0) / 1000).toFixed(1)}s`; cmdRow.lastChild.append(t); };
-        if (isRisky(reply.cmd) && !(await ask(`Risky command:\n${reply.cmd}`))) {
+        if (isRisky(reply.cmd) && !(await ask(DEV ? `Risky command:\n${reply.cmd}` : `${String(reply.say || reply.step || 'This will change things on your PC').trim()}. Go ahead?`))) {
           results.push('User refused to run this command. Choose another way or finish.');
           allOk = false;
         } else {
           setSt('running');
           const { code, out } = await tm('cmdRun', window.api.run(reply.cmd));
           ran.push(reply.cmd);
-          if (out.trim()) print('out', out.trim(), 'out');
+          if (out.trim()) techPrint('out', out.trim(), 'out');
           // dir/where/findstr exit 1 just means "nothing matched": not an error, no need for deep thinking.
           const soft = code === 1 && /^\s*(dir|where|findstr|tasklist|fc)\b/i.test(reply.cmd);
           let openedByApp = false;
@@ -1119,8 +1124,8 @@ TEAM MEMBER: you are one of several agents working in parallel for a manager. Do
             const m = reply.cmd.match(/^\s*start\s+""\s+"([^"]+)"\s*$/i);
             if (m && !/^https?:/i.test(m[1]) && !(await window.api.openPath(m[1]))) { openedByApp = true; print('out', `opened ${m[1]} (via default app)`, 'open'); }
           }
-          if (code && !soft && !openedByApp) { print('err', `exit ${code}`, ''); think = true; allOk = false; stepFailed = true; }
-          else if (soft && code) print('dim', code && !out.trim() ? 'no match' : 'ok (exit 1 = partial match)', '');
+          if (code && !soft && !openedByApp) { techPrint('err', `exit ${code}`, ''); think = true; allOk = false; stepFailed = true; }
+          else if (soft && code) techPrint('dim', code && !out.trim() ? 'no match' : 'ok (exit 1 = partial match)', '');
           if (out.includes('[killed after 60s')) window.api.notify('problem', `A command for "${task.slice(0, 60)}" timed out after 60s.`);
           results.push(`Command exit code ${openedByApp ? 0 : code}${soft && !out.trim() ? ' (nothing matched)' : ''}\n${out}${openedByApp ? '\n(file opened via the default app)' : ''}`);
         }
@@ -1154,7 +1159,7 @@ TEAM MEMBER: you are one of several agents working in parallel for a manager. Do
     const secs = (Date.now() - t0) / 1000;
     const ok = (!failed && !stopped && !asked) || offlineOk;
     window.api.timing('log', { text: task, route: 'old', mode: speedMode, ok: !!ok, stopped, asked, failed, fails, modelCalls, steps: ran.length + webSteps, totalMs: Math.round(Date.now() - t0), stages: TM }).catch(() => {});
-    if (!asked && !stopped && !failed) { const n = ran.length + webSteps; print('done', `${n} step${n === 1 ? '' : 's'} · ${secs.toFixed(1)}s`, 'done'); }
+    if (!asked && !stopped && !failed) { const n = ran.length + webSteps; print('done', DEV ? `${n} step${n === 1 ? '' : 's'} · ${secs.toFixed(1)}s` : `done in ${secs.toFixed(1)}s`, 'done'); }
     // Remember only clean runs: every command exit 0, nothing refused, no question left open.
     if (ok && !offlineOk && allOk && ran.length && !ran.some(serious)) await window.api.db('remember', task, ran, lastSay);
     if (!asked) {
