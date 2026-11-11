@@ -1,4 +1,5 @@
-import { app, BrowserWindow, ipcMain, globalShortcut, screen, Notification, shell, webContents, Tray, Menu } from 'electron';
+import { app, BrowserWindow, ipcMain, globalShortcut, screen, Notification, shell, webContents, Tray, Menu, dialog } from 'electron';
+import Anthropic from '@anthropic-ai/sdk';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -10,7 +11,7 @@ import { batName, fixCmd } from './memory.js';
 import { fuzzy } from './fuzzy.js';
 import { makeActions } from './fast/actions.js';
 import { loadActions, validateParams, fillTemplate, routerLines, similarPrompt } from './fast/registry.js';
-import { PathIndex } from './fast/index.js';
+import { PathIndex, skipDir } from './fast/index.js';
 import { checkScript, isInside } from './fast/safety.js';
 import { hashScript } from './fast/scriptFallback.js';
 import { parseLog, formatStats } from './fast/stats.js';
@@ -30,7 +31,7 @@ app.on('render-process-gone', (_e, wc, d) => { dlog('render-process-gone', d.rea
 app.on('child-process-gone', (_e, d) => { dlog('child-process-gone', d.type, d.reason, d.exitCode); if (d.reason !== 'clean-exit') cloud.reportError('crash', `${d.type} process gone: ${d.reason} (${d.exitCode})`); });
 const realQuit = app.quit.bind(app);
 app.quit = () => { dlog('app.quit called from', new Error().stack.split('\n').slice(2, 5).join(' | ')); realQuit(); };
-dlog('starting; started =', started, '; packaged =', app.isPackaged);
+dlog('starting; started =', started, '; packaged =', app.isPackaged, '; args =', process.argv.slice(1).join(' '));
 if (started) app.quit();
 const PREPARE = process.argv.includes('--prepare');
 // Launching again (e.g. desktop shortcut) just brings the running app forward.
@@ -142,12 +143,13 @@ ipcMain.on('reportError', (_e, kind, message, stack) => cloud.reportError(kind =
 // Notes › Check for updates: newest GitHub release vs this version; installUpdate downloads (if needed) and installs it now.
 ipcMain.handle('checkUpdates', async () => { checkModels(true); return updater ? updater.checkNow() : { current: app.getVersion(), latest: null, dev: true }; });
 ipcMain.handle('installUpdate', () => updater?.installNow());
-const setAutostart = (on) => { if (app.isPackaged) app.setLoginItemSettings({ openAtLogin: on, path: process.execPath, args: ['--autostart'] }); };
+// Never from the forge build in out\ (testing it overwrote the installed app's Run entry, so Windows started the dev copy).
+const setAutostart = (on) => { if (app.isPackaged && !/\\out\\[^\\]+-win32-x64\\/i.test(process.execPath)) app.setLoginItemSettings({ openAtLogin: on, path: process.execPath, args: ['--autostart'] }); };
 ipcMain.handle('autostart', (_e, on) => { db.setSetting('autostart', on); setAutostart(on); return app.isPackaged; });
 
 ipcMain.handle('config', () => {
   const { keys, models } = loadConfig();
-  return { dev: !app.isPackaged, version: app.getVersion(), model: models[0], models, hasKey: keys.length > 0, keyCount: keys.length, path: cfgPath() };
+  return { dev: !app.isPackaged, version: app.getVersion(), model: models[0], models, hasKey: keys.length > 0 || !!ownActive(), own: ownActive() ? { provider: ownActive().provider, model: ownActive().model } : null, keyCount: keys.length, path: cfgPath() };
 });
 
 // Settings → keys. The page only ever sees masked keys.
@@ -247,6 +249,104 @@ async function tryProviders(messages, think, rec, opts) {
   for (const lane of lanes.slice(0, 6)) { if (timeouts >= 2) break; try { return await one(lane); } catch {} }
   return null;
 }
+// ---- The user's own AI (Settings › Keys › "Your own AI"): their key, their model, used FIRST for every AI call.
+// If it fails (bad key, no credit, down) the free chain below takes over, so Genisys keeps working.
+// config.json: ownKeys: { anthropic: "sk-ant-…", openai: "sk-…", … }, ownUrl: "<custom base url>", ownModel: { provider, model } | null
+const OWN = {
+  anthropic: { name: 'Claude (Anthropic)', prefix: 'sk-ant-', models: ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-4-5', 'claude-fable-5-1'], keyUrl: 'https://console.anthropic.com/settings/keys' },
+  openai: { name: 'OpenAI', prefix: 'sk-', url: 'https://api.openai.com/v1', tokens: 'max_completion_tokens', keyUrl: 'https://platform.openai.com/api-keys' },
+  gemini: { name: 'Google Gemini', url: 'https://generativelanguage.googleapis.com/v1beta/openai', keyUrl: 'https://aistudio.google.com/apikey' },
+  deepseek: { name: 'DeepSeek', prefix: 'sk-', url: 'https://api.deepseek.com/v1', keyUrl: 'https://platform.deepseek.com/api_keys' },
+  mistral: { name: 'Mistral', url: 'https://api.mistral.ai/v1', keyUrl: 'https://console.mistral.ai/api-keys' },
+  openrouter: { name: 'OpenRouter (paid models)', prefix: 'sk-or-', url: 'https://openrouter.ai/api/v1', keyUrl: 'https://openrouter.ai/keys' },
+  custom: { name: 'Other (OpenAI-compatible URL)', custom: true },
+};
+const ownUrl = (id, cfg = readCfg()) => (OWN[id].custom ? String(cfg.ownUrl || '').replace(/\/+$/, '').replace(/\/chat\/completions$/, '') : OWN[id].url);
+const ownKey = (id, cfg = readCfg()) => cfg.ownKeys?.[id] || '';
+function ownActive() {
+  const cfg = readCfg(), m = cfg.ownModel;
+  return m && OWN[m.provider] && m.model && ownKey(m.provider, cfg) ? { ...m, key: ownKey(m.provider, cfg), url: ownUrl(m.provider, cfg) } : null;
+}
+// Claude models that support the server-side refusal fallback (a declined request is re-run on another Claude model).
+const CLAUDE_FALLBACK = /^claude-(opus-5-5|opus-5|fable-5-1|sonnet-5-5)$/;
+async function callOwn({ provider, model, key, url }, messages, { think, maxTokens, timeoutMs }) {
+  if (provider === 'anthropic') {
+    const client = new Anthropic({ apiKey: key, maxRetries: 1, timeout: timeoutMs });
+    const system = messages.filter((m) => m.role === 'system').map((m) => String(m.content)).join('\n\n');
+    const msgs = messages.filter((m) => m.role !== 'system').map((m) => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: String(m.content) }));
+    const params = { model, max_tokens: maxTokens || (think ? 16000 : 4000), messages: msgs, ...(system ? { system } : {}) };
+    // Effort is the speed/depth control on current Claude models (thinking stays adaptive); Haiku 4.5 doesn't take it.
+    if (!/haiku/.test(model)) params.output_config = { effort: think ? 'high' : 'low' };
+    const res = CLAUDE_FALLBACK.test(model)
+      ? await client.beta.messages.create({ ...params, betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' })
+      : await client.messages.create(params);
+    if (res.stop_reason === 'refusal') throw new Error('Claude declined this request');
+    const text = res.content.filter((b) => b.type === 'text').map((b) => b.text).join('');
+    if (!text) throw new Error(res.stop_reason === 'max_tokens' ? 'reply was cut off (max tokens)' : 'empty reply');
+    return { text, usage: res.usage };
+  }
+  const body = { model, messages, [OWN[provider].tokens || 'max_tokens']: maxTokens || (think ? 8000 : 2000) };
+  const res = await fetch(`${url}/chat/completions`, { method: 'POST', headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs) });
+  const data = await res.json().catch(() => ({}));
+  const text = data.choices?.[0]?.message?.content;
+  if (!res.ok || !text) throw new Error(data.error?.message || `HTTP ${res.status}`);
+  return { text, usage: data.usage || null };
+}
+// Plain-language reason for a failed own-AI call (shown in Settings and in the fallback notice).
+const ownErr = (err) => (err instanceof Anthropic.AuthenticationError ? 'the key was rejected'
+  : err instanceof Anthropic.PermissionDeniedError ? 'this key may not use that model'
+  : err instanceof Anthropic.NotFoundError ? 'that model was not found'
+  : err instanceof Anthropic.RateLimitError ? 'rate limit reached, try again in a minute'
+  : err instanceof Anthropic.APIConnectionError ? 'could not reach the service'
+  : err instanceof Anthropic.APIError ? `${err.status || ''} ${err.message}`.trim()
+  : err?.name === 'TimeoutError' ? 'it took too long' : String(err?.message || err)).slice(0, 160);
+let ownWarned = 0;
+ipcMain.handle('ownAI', async (_e, op, a = {}) => {
+  const cfg = readCfg();
+  cfg.ownKeys = cfg.ownKeys || {};
+  if (op === 'setKey') {
+    const def = OWN[a.provider]; if (!def) throw new Error('Unknown provider');
+    const k = String(a.key || '').trim();
+    if (k.length < 16 || /\s/.test(k)) throw new Error('That does not look like an API key.');
+    if (def.prefix && !k.startsWith(def.prefix)) throw new Error(`A ${def.name} key starts with ${def.prefix}`);
+    if (def.custom) { if (!/^https?:\/\/\S+$/i.test(String(a.url || ''))) throw new Error('Add the service URL, e.g. http://localhost:11434/v1'); cfg.ownUrl = String(a.url).trim(); }
+    cfg.ownKeys[a.provider] = k;
+    writeCfg(cfg);
+  } else if (op === 'removeKey') {
+    delete cfg.ownKeys[a.provider];
+    if (cfg.ownModel?.provider === a.provider) cfg.ownModel = null;
+    writeCfg(cfg);
+  } else if (op === 'use') { // { provider, model } or null = back to the free models
+    if (a.provider && !ownKey(a.provider, cfg)) throw new Error('Add a key for that provider first.');
+    cfg.ownModel = a.provider && a.model ? { provider: a.provider, model: String(a.model).trim() } : null;
+    writeCfg(cfg);
+  } else if (op === 'models') { // live list from the provider (falls back to the built-in list)
+    const key = ownKey(a.provider, cfg); if (!key) return OWN[a.provider]?.models || [];
+    try {
+      if (a.provider === 'anthropic') {
+        const ids = [];
+        for await (const m of new Anthropic({ apiKey: key, maxRetries: 1, timeout: 10000 }).models.list()) ids.push(m.id);
+        return [...new Set([...OWN.anthropic.models.filter((m) => ids.includes(m)), ...ids])];
+      }
+      const r = await fetch(`${ownUrl(a.provider, cfg)}/models`, { headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(10000) });
+      const d = await r.json();
+      return (d.data || []).map((m) => String(m.id).replace(/^models\//, '')).filter(Boolean).sort();
+    } catch { return OWN[a.provider]?.models || []; }
+  } else if (op === 'test') {
+    const key = ownKey(a.provider, cfg); if (!key) throw new Error('Add a key first.');
+    const t = Date.now();
+    try {
+      const r = await callOwn({ provider: a.provider, model: a.model, key, url: ownUrl(a.provider, cfg) }, [{ role: 'user', content: 'Reply with just: ok' }], { think: false, maxTokens: 300, timeoutMs: 30000 });
+      return { ok: true, ms: Date.now() - t, text: r.text.slice(0, 80) };
+    } catch (err) { return { ok: false, ms: Date.now() - t, error: ownErr(err) }; }
+  }
+  const c = readCfg();
+  return {
+    providers: Object.entries(OWN).map(([id, d]) => ({ id, name: d.name, keyUrl: d.keyUrl || '', custom: !!d.custom, url: d.custom ? c.ownUrl || '' : '', masked: c.ownKeys?.[id] ? mask(c.ownKeys[id]) : '', models: d.models || [] })),
+    active: c.ownModel || null,
+  };
+});
+
 // Settings > Keys: keys for the fast providers (masked in the page).
 ipcMain.handle('pkeys', (_e, op, provider, arg) => {
   const cfg = readCfg();
@@ -335,13 +435,29 @@ ipcMain.handle('timing', (e, op, rec) => {
 });
 
 const aiHandler = async (e, messages, think, rec, opts = {}) => {
+  // The user's own key + model first. On failure the free chain below answers, and the user is told once.
+  const own = ownActive();
+  if (own) {
+    const at = Date.now();
+    try {
+      const r = await callOwn(own, messages, { think, maxTokens: opts.maxTokens, timeoutMs: opts.fast ? 15000 : think ? 120000 : 60000 });
+      rec.attempts.push({ provider: own.provider, model: own.model, ms: Date.now() - at, r: 'ok' });
+      rec.provider = own.provider; rec.model = own.model; rec.usage = r.usage || null;
+      return r.text;
+    } catch (err) {
+      const why = ownErr(err);
+      rec.attempts.push({ provider: own.provider, model: own.model, ms: Date.now() - at, r: why.slice(0, 60) });
+      dlog('own AI failed', own.provider, own.model, why);
+      if (Date.now() - ownWarned > 10 * 60e3) { ownWarned = Date.now(); notify('problem', `Your ${OWN[own.provider].name} model failed (${why}). Using the free models for now; check Settings › Keys.`); }
+    }
+  }
   // Speed mode: try the fast providers first (short prompts only: their free limits are small), then fall back to OpenRouter below.
   if (opts.fast || rec.promptChars < FAST_CAP) { // fast providers (Groq…) first for every call that fits; OpenRouter is the fallback
     const fast = await tryProviders(messages, think, rec, opts);
     if (fast != null) return fast;
   }
   const { keys, models: cfgModels } = loadConfig();
-  if (!keys.length) throw new Error('No API key. Add one in Settings → keys.');
+  if (!keys.length) throw new Error(own ? `Your ${OWN[own.provider].name} model failed and there is no free key to fall back on. Check Settings → keys.` : 'No API key. Add one in Settings → keys.');
   const usable = keys.map((k, n) => ({ k, n: n + 1 })).filter(({ k }) => restingUntil(k) < Date.now());
   if (!usable.length) throw new Error(`All ${keys.length} API keys hit their daily limit. They reset at 00:00 UTC, or add another key in Settings → keys.`);
   const models = [...new Set([...cfgModels, ...DEFAULT_MODELS])];
@@ -459,6 +575,47 @@ ipcMain.handle('write', (_e, file, content, force) => {
   fs.mkdirSync(path.dirname(full), { recursive: true });
   fs.writeFileSync(full, content);
   return { full };
+});
+
+// Script Writer: the user picks where to save and what to open (Windows' own dialogs). null = cancelled.
+const scriptsHome = () => path.join(os.homedir(), 'scripts');
+ipcMain.handle('saveAs', async (e, name, text, dir) => {
+  fs.mkdirSync(scriptsHome(), { recursive: true });
+  const base = dir && fs.existsSync(dir) ? dir : scriptsHome();
+  const r = await dialog.showSaveDialog(BrowserWindow.fromWebContents(e.sender), { title: 'Save script', defaultPath: path.join(base, path.basename(String(name || 'script.txt'))) });
+  if (r.canceled || !r.filePath) return null;
+  fs.writeFileSync(r.filePath, String(text ?? ''));
+  return r.filePath;
+});
+// Open folder: its files for the explorer tree (junk folders like node_modules / .git skipped, capped so huge folders stay fast).
+ipcMain.handle('openFolderDialog', async (e) => {
+  const r = await dialog.showOpenDialog(BrowserWindow.fromWebContents(e.sender), { title: 'Open a folder', defaultPath: scriptsHome(), properties: ['openDirectory'] });
+  const root = r.filePaths?.[0];
+  if (r.canceled || !root) return null;
+  const entries = [];
+  const walk = (dir, relDir, depth) => {
+    let ents; try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const ent of ents) {
+      if (entries.length >= 5000) return;
+      const rel = relDir ? `${relDir}\\${ent.name}` : ent.name;
+      if (ent.isDirectory()) { if (skipDir(ent.name)) continue; entries.push({ p: rel, d: true }); if (depth < 12) walk(path.join(dir, ent.name), rel, depth + 1); } else entries.push({ p: rel, d: false });
+    }
+  };
+  walk(root, '', 0);
+  return { root, name: path.basename(root) || root, entries };
+});
+ipcMain.handle('openFileDialog', async (e) => {
+  const r = await dialog.showOpenDialog(BrowserWindow.fromWebContents(e.sender), { title: 'Open a file', defaultPath: scriptsHome(), properties: ['openFile'] });
+  const f = r.filePaths?.[0];
+  if (r.canceled || !f) return null;
+  if (fs.statSync(f).size > 5e6) throw new Error('That file is too big to edit here (over 5 MB).');
+  return { path: f, text: fs.readFileSync(f, 'utf8') };
+});
+// The old text of a file the AI is about to replace (for the +/- line counts). Same path rules as 'write'; small text files only.
+ipcMain.handle('readText', (_e, file) => {
+  const full = path.resolve(os.homedir(), String(file).replace(/%(\w+)%/g, (m, v) => process.env[v] ?? m));
+  if (!fs.existsSync(full) || fs.statSync(full).size > 2e6) return null;
+  return fs.readFileSync(full, 'utf8');
 });
 
 ipcMain.on('quit', () => app.quit()); // power button: Genisys fully off, nothing left running
@@ -739,6 +896,79 @@ async function startIndex(force, deadline = 0) {
     dlog('path index ready:', pindex.count, 'entries');
   } catch (e) { dlog('path index failed', e?.message); } finally { indexBusy = false; }
 }
+// Whole-PC tree (every drive, files + folders), separate from the user-folder tree above so the AI context stays small.
+// Used by /search now; meant for AI tasks that need the full PC later. Rescanned at start and every 5 min.
+let pcIndex = new PathIndex();
+let pcBusy = false;
+const pcFile = () => path.join(userDir(), 'pc-index.json');
+const drives = () => 'CDEFGHIJKLMNOPQRSTUVWXYZ'.split('').map((l) => `${l}:\\`).filter((d) => fs.existsSync(d));
+function loadPcIndex() {
+  if (!pcIndex.ready && fs.existsSync(pcFile())) { try { pcIndex = PathIndex.fromJSON(JSON.parse(fs.readFileSync(pcFile(), 'utf8'))); } catch {} }
+}
+async function startPcIndex() {
+  if (pcBusy) return;
+  pcBusy = true;
+  try {
+    loadPcIndex();
+    const t = Date.now();
+    pcIndex.setApps(scanApps());
+    await pcIndex.scan(drives(), fs.promises, { maxEntries: 600000, maxDepth: 12 });
+    fs.writeFileSync(pcFile(), JSON.stringify(pcIndex.toJSON()));
+    dlog('pc index ready:', pcIndex.count, 'entries in', Date.now() - t, 'ms');
+  } catch (e) { dlog('pc index failed', e?.message); } finally { pcBusy = false; }
+}
+// /search filters (Ctrl+P in the drop-up)
+const SEARCH_FILTERS = {
+  all: {},
+  folders: { kind: 'dir' },
+  documents: { kind: 'file', ext: 'pdf,doc,docx,xls,xlsx,ppt,pptx,txt,md,csv,rtf,odt' },
+  images: { kind: 'file', ext: 'jpg,jpeg,png,gif,webp,heic,svg,bmp' },
+  media: { kind: 'file', sections: ['media_library'] },
+  apps: { sections: ['installed_apps'] },
+};
+// shortcut: lookup runs on the main process (a brief block, capped at ~400 ms); move it to a worker if the tree passes ~1M entries.
+ipcMain.handle('search', (_e, q, filter = 'all') => {
+  const t = Date.now();
+  const ix = pcIndex.scannedAt ? pcIndex : pindex; // not `ready`: that turns true with just the apps, mid first scan
+  const f = SEARCH_FILTERS[filter] || {};
+  const hits = ix.lookup(String(q || ''), { sections: ['installed_apps', 'personal_files', 'media_library'], limit: 8, exists: fs.existsSync, deadline: t + 400, ...f });
+  dlog('search', JSON.stringify(q), filter, hits.length, 'hits in', Date.now() - t, 'ms');
+  return hits.map((h) => ({ path: h.path, dir: !!h.dir }));
+});
+// File actions from the /search results menu. Paths come from the renderer: only act on existing absolute paths.
+const realPath = (p) => { p = String(p || ''); if (!path.isAbsolute(p) || !fs.existsSync(p)) throw new Error('That item no longer exists.'); return path.resolve(p); };
+ipcMain.on('reveal', (_e, p) => { try { shell.showItemInFolder(realPath(p)); } catch {} });
+// Explorer's icon for a result row. Cached per extension; apps, shortcuts and icon files have their own icon, so per path.
+const iconCache = new Map();
+ipcMain.handle('fileIcon', async (_e, p) => {
+  const ext = path.extname(String(p || '')).toLowerCase();
+  const key = !ext || /^\.(exe|lnk|ico|url)$/.test(ext) ? String(p).toLowerCase() : ext;
+  if (!iconCache.has(key)) {
+    try { iconCache.set(key, (await app.getFileIcon(realPath(p), { size: 'normal' })).toDataURL()); } catch { return ''; }
+    if (iconCache.size > 2000) iconCache.delete(iconCache.keys().next().value);
+  }
+  return iconCache.get(key);
+});
+ipcMain.handle('fileClip', async (_e, p, cut) => {
+  const q = realPath(p).replace(/'/g, "''");
+  // Explorer's own clipboard format, so Ctrl+V in any folder pastes (cut = move). Drop effect 2 = move, 5 = copy.
+  const r = await runPowerShell(`Add-Type -AssemblyName System.Windows.Forms
+$l = New-Object System.Collections.Specialized.StringCollection; [void]$l.Add('${q}')
+$d = New-Object System.Windows.Forms.DataObject; $d.SetFileDropList($l)
+$d.SetData('Preferred DropEffect', (New-Object System.IO.MemoryStream (,[byte[]](${cut ? 2 : 5},0,0,0))))
+[System.Windows.Forms.Clipboard]::SetDataObject($d, $true)`, 10000);
+  if (r.code) throw new Error(r.out.trim() || 'Could not use the clipboard.');
+});
+ipcMain.handle('fileRename', async (_e, p, name) => {
+  const from = realPath(p);
+  name = String(name || '').trim();
+  if (!name || name === '.' || name === '..' || /[\\/:*?"<>|]/.test(name) || /[. ]$/.test(name)) throw new Error('That name is not allowed in Windows.');
+  const to = path.join(path.dirname(from), name);
+  if (to.toLowerCase() !== from.toLowerCase() && fs.existsSync(to)) throw new Error(`${name} already exists there.`);
+  await fs.promises.rename(from, to);
+  return to;
+});
+ipcMain.handle('fileTrash', (_e, p) => shell.trashItem(realPath(p))); // Recycle Bin: always recoverable
 // Index first (a few ms); the live folder walk only when the index is missing or knows nothing.
 async function findSmart(opts = {}) {
   if (pindex.ready && opts.name) {
@@ -879,7 +1109,7 @@ const wins = new Map();
 const pushAgents = () => mainWin?.webContents.send('agents', [...agents.values()]);
 
 // Small "hacker film" windows that tile across the screen; a closed window frees its slot for the next one.
-const SIZES = { main: [1100, 760], agent: [614, 326], script: [614, 326], runner: [740, 96] };
+const SIZES = { main: [1100, 760], agent: [614, 326], script: [1040, 900] /* taller than the others: room for code */, runner: [740, 96] };
 const usedSlots = new Set();
 function placeTile(w, h) {
   const wa = screen.getPrimaryDisplay().workArea;
@@ -1016,12 +1246,15 @@ const reported = new Set();     // "group:idx" of agents that already sent their
 function openAgent(kind, task = '', opts = {}, parentId) {
   const id = nextId++;
   const title = `~/${opts.web ? 'browser' : kind}-${id}`;
-  const { slot, x, y } = placeTile(...SIZES[kind]);
+  // The script writer is a real editor: centred and big (capped to the screen), not a small tile.
+  const wa = screen.getPrimaryDisplay().workArea;
+  const big = kind === 'script' ? { w: Math.min(SIZES.script[0], wa.width - 40), h: Math.min(SIZES.script[1], wa.height - 40) } : null;
+  const { slot, x, y } = big ? { slot: -1, x: wa.x + Math.round((wa.width - big.w) / 2), y: wa.y + Math.round((wa.height - big.h) / 2) } : placeTile(...SIZES[kind]);
   const query = { mode: kind, id, title, task };
   if (opts.web) query.web = '1';
   if (opts.child) query.child = '1';
   if (opts.group) { query.group = opts.group; query.idx = String(opts.idx ?? 0); if (parentId != null) groupParent.set(opts.group, parentId); }
-  const win = createWindow(query, { x, y });
+  const win = createWindow(query, big ? { x, y, width: big.w, height: big.h } : { x, y });
   agents.set(id, { id, kind: opts.web ? 'browser' : kind, title, st: 'idle' });
   wins.set(id, win);
   win.on('closed', () => {
@@ -1049,7 +1282,7 @@ ipcMain.on('agentDone', (_e, info) => {
 ipcMain.on('runnerGrow', (_e, extra) => {
   if (!runnerWin || runnerWin.pinned) return;
   const b = runnerWin.getBounds();
-  const h = SIZES.runner[1] + Math.max(0, Math.min(300, Math.round(extra || 0)));
+  const h = SIZES.runner[1] + Math.max(0, Math.min(560, Math.round(extra || 0)));
   runnerWin.setBounds({ ...b, y: b.y + b.height - h, height: h });
 });
 // Light/dark is per window and handled in the page; nothing global (nativeTheme would flip every window).
@@ -1188,7 +1421,10 @@ app.whenReady().then(() => {
   tray.on('click', showMain);
   // Folder tree: saved by the installer; without it (portable zip, cut-short scan) build it right away.
   setTimeout(() => startIndex(), fs.existsSync(path.join(userDir(), 'path-index.json')) ? 15000 : 1500);
-  setInterval(() => startIndex(), 6 * 3600e3); // keep it fresh (unchanged folders are reused, so this is cheap)
+  loadPcIndex(); // saved whole-PC tree: /search works right away, the rescan below refreshes it
+  setTimeout(() => startPcIndex(), 20000);
+  // Every 5 min pick up new/renamed files (cheap: unchanged folders are reused, only changed ones are read again).
+  setInterval(() => { startIndex(true); startPcIndex(); }, 5 * 60e3);
   // Specs: refresh after an update, and let the account know (admin › Users).
   setTimeout(async () => {
     try {

@@ -22,7 +22,7 @@ export class PathIndex {
   constructor() { this.dirs = new Map(); this.apps = []; this.sys = []; this.sec = Object.fromEntries(SECTIONS.map((s) => [s, []])); this.pins = []; this.ready = false; this.scannedAt = 0; this.count = 0; }
 
   // fsp = a promises-style fs: readdir(dir,{withFileTypes}), stat(p). Yields to the event loop so the app stays smooth.
-  async scan(roots, fsp, { maxEntries = 300000, pause = () => new Promise((r) => setTimeout(r, 4)), every = 40, isStopped = () => false } = {}) {
+  async scan(roots, fsp, { maxEntries = 300000, maxDepth = 7, pause = () => new Promise((r) => setTimeout(r, 4)), every = 40, isStopped = () => false } = {}) {
     const seen = new Set();
     const queue = roots.map((r) => [r, 0]);
     const next = new Map();
@@ -50,7 +50,7 @@ export class PathIndex {
       }
       next.set(dir, rec);
       total += rec.kids.length;
-      if (depth < 7) for (const k of rec.kids) if (k.d) queue.push([path.join(dir, k.n), depth + 1]);
+      if (depth < maxDepth) for (const k of rec.kids) if (k.d) queue.push([path.join(dir, k.n), depth + 1]);
       if (++n % every === 0) await pause();
     }
     this.dirs = next;
@@ -68,6 +68,8 @@ export class PathIndex {
     for (const [dir, rec] of this.dirs) for (const k of rec.kids) { const e = mkEntry(dir, k); sec[sectionOf(e)].push(e); }
     sec.installed_apps = this.apps.slice();
     sec.system_files = this.sys.map((f) => ({ ...f, sys: true }));
+    // search keys once here, not per query: a lookup over a whole-PC tree stays well under a second
+    for (const s of SECTIONS) for (const e of sec[s]) { e.h = squash(e.p.slice(-(e.n.length + 60))); e.q = squash(e.n); }
     this.sec = sec;
     this.count = SECTIONS.reduce((n, s) => n + sec[s].length, 0);
   }
@@ -80,7 +82,8 @@ export class PathIndex {
   }
 
   // -> [{ path, score, dir }] best first. kind: any|file|dir; ext: 'mp4,mkv'. Pinned paths always win.
-  lookup(query, { kind = 'any', ext, sections = ['personal_files', 'media_library'], limit = 8, exists } = {}) {
+  // deadline (ms timestamp): the typo passes stop there and return what they found.
+  lookup(query, { kind = 'any', ext, sections = ['personal_files', 'media_library'], limit = 8, exists, deadline = Infinity } = {}) {
     const pin = this.pinned(query, exists);
     if (pin.length) return pin.slice(0, limit);
     const want = new Set(String(ext || '').toLowerCase().split(/[\s,;|]+/).map((x) => x.replace(/^\./, '')).filter(Boolean));
@@ -92,24 +95,26 @@ export class PathIndex {
     const pool = sections.flatMap((s) => this.sec[s] || []).filter((e) => (kind === 'any' || e.t === kind) && (!want.size || (e.t === 'file' && want.has(e.e))));
     const hits = [];
     for (const e of pool) { // pass 1: every word appears in the name or its folders (fast, handles most lookups)
-      const hay = squash(e.p.slice(-(e.n.length + 60)));
       if (epRe && !epRe.test(e.n)) continue;
-      if (words.every((w) => hay.includes(w))) hits.push({ path: e.p, score: squash(e.n).includes(words.join('')) || words.every((w) => squash(e.n).includes(w)) ? 1 : 0.92, dir: e.t === 'dir' });
+      if (words.every((w) => e.h.includes(w))) hits.push({ path: e.p, score: e.q.includes(words.join('')) || words.every((w) => e.q.includes(w)) ? 1 : 0.92, dir: e.t === 'dir' });
     }
     if (!hits.length && !epRe) { // pass 2 (typos, only when pass 1 found nothing): letter-pair similarity on names
       const qs = words.join(' ');
-      for (const e of pool) { const sc = fuzzy(qs, e.n); if (sc >= 0.7) hits.push({ path: e.p, score: Math.round(sc * 100) / 100, dir: e.t === 'dir' }); }
+      for (let i = 0; i < pool.length && (i % 2000 || Date.now() < deadline); i++) { const e = pool[i], sc = fuzzy(qs, e.n); if (sc >= 0.7) hits.push({ path: e.p, score: Math.round(sc * 100) / 100, dir: e.t === 'dir' }); }
     }
     if (!hits.length && words.length >= 2) { // pass 3: one extra word the name doesn't have ("monthly report october" -> MONTHLY_REPORT_2026-10)
-      for (const e of pool) {
+      for (let i = 0; i < pool.length && (i % 2000 || Date.now() < deadline); i++) {
+        const e = pool[i];
         if (epRe && !epRe.test(e.n)) continue;
-        const hay = squash(e.p.slice(-(e.n.length + 60)));
-        if (words.filter((w) => hay.includes(w)).length === words.length - 1) hits.push({ path: e.p, score: 0.8, dir: e.t === 'dir' });
+        if (words.filter((w) => e.h.includes(w)).length === words.length - 1) hits.push({ path: e.p, score: 0.8, dir: e.t === 'dir' });
       }
     }
     hits.sort((a, b) => b.score - a.score || a.path.length - b.path.length);
     const uniq = [...new Map(hits.map((h) => [h.path.toLowerCase(), h])).values()];
-    return (exists ? uniq.filter((h) => exists(h.path)) : uniq).slice(0, limit);
+    if (!exists) return uniq.slice(0, limit);
+    const out = []; // disk check only until `limit` are found (a 2-letter query can match thousands)
+    for (const h of uniq) { if (out.length >= limit) break; if (exists(h.path)) out.push(h); }
+    return out;
   }
 
   // best installed app exe for a name ("chrome" -> C:\...\chrome.exe)

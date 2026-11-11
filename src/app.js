@@ -1,10 +1,9 @@
-// highlight.js is loaded lazily, only in Script Writer windows.
-let hljs = null;
-if (new URLSearchParams(location.search).get('mode') === 'script') import('highlight.js/lib/common').then((m) => { hljs = m.default; });
 import logoUrl from '../assets/icon.svg';
 import { isRisky } from './risky.js';
 import { fixCmd } from './memory.js';
 import { createEditor } from './editor.js';
+import { codeBlock, splitFences } from './codeblock.js';
+import { confirmItem, fileTree, addCitations, sourceChips, changesCard, lineDiff, parseEnv, envCard } from './agentui.js';
 import { initTabs, render, panelOpen } from './tabs.js';
 import { spin } from './globe.js';
 import { mountGlobe } from './cobeglobe.js';
@@ -20,47 +19,17 @@ import { fitFast, byNumbers, dropFolderMap } from './fast/fit.js';
 import { buildScriptMessages, extractScript } from './fast/scriptFallback.js';
 applyAccent();
 
-// Editor card: path header + "LANG · N LINES", zero-padded gutter, theme token colors (index.html).
-// Code "types in" a few lines per frame so you can watch it being written.
-function codeView(file, content) {
-  const name = file.split(/[\\/]/).pop();
-  const ext = name.includes('.') ? name.split('.').pop().toLowerCase() : '';
-  const esc = (t) => t.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c]);
-  const lang = hljs && hljs.getLanguage(ext) ? ext : null;
-  const paint = (src) => (!hljs ? esc(src) : lang ? hljs.highlight(src, { language: lang }).value : hljs.highlightAuto(src).value);
-  const langName = (hljs ? (lang ? hljs.getLanguage(lang).name : hljs.highlightAuto(content).language) : null) || 'text';
-  const lines = content.replace(/\n$/, '').split('\n');
-
-  const ed = document.createElement('div');
-  ed.className = 'editor';
-  ed.innerHTML = `<div class="eh"><span class="path"></span><span class="meta"></span></div>
-    <div class="body"><pre class="gutter"></pre><pre class="src"><code class="hljs"></code></pre></div>`;
-  ed.querySelector('.path').textContent = file.split(/[\\/]/).slice(-3).join('/');
-  ed.querySelector('.meta').textContent = `${langName} · ${lines.length} lines`;
-  const code = ed.querySelector('code');
-  const gutter = ed.querySelector('.gutter');
-  const pad = String(lines.length).length < 2 ? 2 : String(lines.length).length;
-  const per = Math.max(1, Math.ceil(lines.length / 30)); // whole file appears in ~30 frames
-  let n = 0;
-  const frame = () => {
-    n = Math.min(lines.length, n + per);
-    code.innerHTML = paint(lines.slice(0, n).join('\n'));
-    gutter.textContent = lines.slice(0, n).map((_, i) => String(i + 1).padStart(pad, '0')).join('\n');
-    ed.closest('.log')?.scrollTo(0, 1e9);
-    if (n < lines.length) setTimeout(frame, 16);
-  };
-  requestAnimationFrame(frame);
-  return ed;
-}
 
 // Serious commands (deleting, system/registry/network changes, killing things) are never replayed from memory: the AI re-checks them every time.
 const serious = (c) => isRisky(c) || /\b(del|erase|rmdir|rd|format|diskpart|reg\s+(add|delete|import)|shutdown|taskkill|sc\s+(delete|stop|config)|net\s+user|icacls|takeown|netsh|bcdedit|schtasks|Remove-Item|Set-ExecutionPolicy|Stop-Process|Stop-Service|Clear-Disk)\b/i.test(c);
 
 const SYSTEM = `You are Genisys, an autonomous Windows executor and coder. The user's home is %USERPROFILE%.
 Each reply MUST be ONE JSON object and nothing else:
-{"say": "<one short sentence>", "ask": "<question for the user, or omit>", "options": ["<short answer>", ...] or omit, "decided": "<a choice you made yourself, or omit>", "plan": ["<step>", ...] or omit, "step": <current plan step number, or omit>, "file": {"path": "<path>", "content": "<full file text>"} or null, "cmd": "<cmd.exe batch lines, or empty>", "find": {"name": "<words from the user, typos ok>", "in": "<folder or omit>", "kind": "file|dir|any", "ext": "<pdf, mkv... or omit>", "open": true|false, "with": "<app name to open it with, or omit>"} or omit, "app": {"name": "<app name>", "file": "<path or omit>"} or omit, "trash": ["<path>", ...] or omit, "restore": "<file name or path>" or omit, "web": {"search": "<query>"} or {"read": "<https url>"} or omit, "learn": {"kind": "interest|trait|fact", "text": "<short fact about the user>"} or omit, "improve": "<idea to improve this app or the user's setup, or omit>", "done": true|false}
-- "file" is written first (use it for ANY script or code: .py, .js, .ps1, .bat, .html…; never write files with echo). Paths may use %USERPROFILE%; relative paths are under home.
+{"say": "<one short sentence>", "ask": "<question for the user, or omit>", "options": ["<short answer>", ...] or omit, "decided": "<a choice you made yourself, or omit>", "plan": ["<step>", ...] or omit, "step": <current plan step number, or omit>, "file": {"path": "<path>", "content": "<full file text>"} or null, "code": {"lang": "<language, e.g. javascript>", "text": "<the complete code>"} or omit, "cmd": "<cmd.exe batch lines, or empty>", "find": {"name": "<words from the user, typos ok>", "in": "<folder or omit>", "kind": "file|dir|any", "ext": "<pdf, mkv... or omit>", "open": true|false, "with": "<app name to open it with, or omit>"} or omit, "app": {"name": "<app name>", "file": "<path or omit>"} or omit, "trash": ["<path>", ...] or omit, "restore": "<file name or path>" or omit, "web": {"search": "<query>"} or {"read": "<https url>"} or omit, "learn": {"kind": "interest|trait|fact", "text": "<short fact about the user>"} or omit, "improve": "<idea to improve this app or the user's setup, or omit>", "done": true|false}
+- "file" is written first (use it for a script or code that must be SAVED or RUN: .py, .js, .ps1, .bat, .html…; never write files with echo). Paths may use %USERPROFILE%; relative paths are under home.
 - "cmd" is then written to a .bat file and run; you receive the exit code and output next turn.
+- WEB SOURCES: after a web search, put the result's number in brackets after the sentence it supports, like "It costs $999 [2]." Only numbers you were given.
+- CODE TO SHOW: when the user asks for code ("write js code for X", an example, a snippet, "how do I … in python") and did not ask to save or run it, put the COMPLETE code in "code" (never only a promise like "here you go"), one short "say", no "file", done=true.
 THINK before acting:
 - DECIDE small things yourself (file names, folders, which of two equal options, sensible defaults) and state it in "decided". Don't bother the user with minor choices.
 - ACT, DON'T CONFIRM: when the user says open / play / run / show / start and ONE target is clear, do it now in this reply (for files: "find" with "open": true, plus "with" if they named an app). Never ask "Should I open X?". Never ask which folder to look in: leave out "in" and find searches all the user's folders at once. Keep the user's numbers in "find" name ("lazarus project ep1", "report v2", "invoice 2024"): the finder uses them to pick the exact file.
@@ -103,9 +72,9 @@ Be FAST and SMART (every extra step costs the user real seconds):
 - Keep "say" short. Set done=true once the task is finished (or impossible). Never repeat a step that already succeeded.`;
 const SCRIPT = `
 You are in SCRIPT WRITER mode: your job is writing clean, complete, working scripts and code.
-- Unless the user gives a path, save scripts in %USERPROFILE%\\scripts\\ with a clear file name.
-- One file per reply; after writing, run or syntax-check it when that is safe, and fix errors you see.
-- Briefly tell the user how to run it in your final "say".`;
+- Use "file" with just a clear file name (e.g. "rename_photos.py"): it goes into the user's editor, NOT to disk. The user saves and runs it themselves, so never "cmd" to run or test it, and set done=true.
+- One file per reply. Briefly tell the user how to run it in your final "say".
+- The editor on the left is ONE buffer you and the user share: always deliver code with "file" so it lands there. Never put code in "say" (no fenced blocks) in this window.`;
 
 // Tone for "say"/"ask" only; commands, paths and code always stay exact.
 const PERSONALITIES = {
@@ -309,10 +278,14 @@ function agent() {
   const input = $('input');
   let ed = null;
   if (mode === 'script') {
-    const scriptsDir = '%USERPROFILE%\\scripts\\';
     const RUN = { py: (p) => `python "${p}"`, js: (p) => `node "${p}"`, mjs: (p) => `node "${p}"`, ps1: (p) => `powershell -NoProfile -ExecutionPolicy Bypass -File "${p}"`, bat: (p) => `call "${p}"`, cmd: (p) => `call "${p}"` };
     ed = createEditor({
-      onSave: async (p, text) => { try { await window.api.write(p, text, true); print('dim', `saved ${p}`, 'save'); } catch (e) { print('err', e.message, 'save'); } },
+      onSaveAs: async (name, text, dir) => { try { const f = await window.api.saveAs(name, text, dir); if (f) print('dim', `saved ${f}`, 'save'); return f; } catch (e) { print('err', e.message, 'save'); return null; } },
+      onOpenFolder: async () => { try { return await window.api.openFolderDialog(); } catch (e) { print('err', e.message, 'folder'); return null; } },
+      onRead: async (p) => { try { const t = await window.api.readText(p); if (t == null) print('err', `Can't open ${p.split(/[\\/]/).pop()} here (missing or over 2 MB).`, 'open'); return t; } catch (e) { print('err', e.message, 'open'); return null; } },
+      onOpen: async () => { try { return await window.api.openFileDialog(); } catch (e) { print('err', e.message.replace(/^Error invoking remote method '\w+': (Error: )?/, ''), 'open'); return null; } },
+      onSave: async (p, text) => { try { const r = await window.api.write(p, text, true); print('dim', `saved ${r.full}`, 'save'); return r.full; } catch (e) { print('err', e.message, 'save'); return null; } },
+      onRename: async (p, name) => { try { return await window.api.fileRename(p, name); } catch (e) { print('err', e.message.replace(/^Error invoking remote method '\w+': (Error: )?/, ''), 'rename'); return null; } },
       onRun: async (p) => {
         const ext = p.split('.').pop().toLowerCase();
         if (!RUN[ext]) { const err = await window.api.openPath(p); if (err) print('err', err, 'open'); return; }
@@ -320,26 +293,13 @@ function agent() {
         print('cmd', RUN[ext](p), 'run');
         await window.api.run(`start "" cmd /k ${RUN[ext](p)}`);
       },
-      onNew: () => { // inline name box in the tab bar
-        const name = document.createElement('input');
-        name.className = 'ed-name'; name.placeholder = 'file name, e.g. tool.py'; name.spellcheck = false;
-        ed.el.querySelector('.ed-tablist').append(name); name.focus();
-        const done = async (ok) => {
-          const n = name.value.trim().replace(/[\\/:*?"<>|]/g, '');
-          name.remove();
-          if (ok && n) { const r = await window.api.write(`${scriptsDir}${n}`, '', true); ed.open(r.full, ''); }
-          else ed.focus();
-        };
-        name.onkeydown = (e) => { e.stopPropagation(); if (e.key === 'Enter') done(true); else if (e.key === 'Escape') done(false); };
-        name.onblur = () => done(false);
-      },
     });
-    document.body.classList.add('has-ed');
+    document.body.classList.add('has-ed', 'log-hidden'); // the AI chat stays out of the way until the user opens it (Chat / Ctrl+J)
     $('log').before(ed.el);
     ed.el.addEventListener('toggle-output', () => document.body.classList.toggle('log-hidden'));
     document.addEventListener('keydown', (e) => { if (e.ctrlKey && e.key.toLowerCase() === 'j') { e.preventDefault(); document.body.classList.toggle('log-hidden'); } });
   }
-  input.placeholder = mode === 'script' ? 'describe the script to write…' : 'tell me what to do…';
+  input.placeholder = mode === 'script' ? 'describe a script…' : 'tell me what to do…';
   const TEAM = `
 AGENT WINDOWS (teamwork): the app can open extra agent windows that work in parallel while you manage them. When the user asks for several agents or parallel work ("open 5 agents to...", "use 3 agents", "split this between agents") or gives a big job with clearly independent parts, reply with "delegate": [{"task": "<complete, self-contained instructions for ONE agent>", "web": true|false}, ...] and set done=true with no cmd. Use exactly N items when the user said N (max 8), otherwise 2-5. Agents cannot see this chat, so every task must carry all the details it needs (names, paths, goal, what to report back) and the parts must not overlap (different files, sites, topics). Set "web": true for jobs that mostly browse the internet. "say" is one short line naming what each agent does.
 If the work is small or can't be split (one quick action, one lookup, one file), DO NOT delegate: say "I'm gonna do it myself, it's kinda simple tho" (in your current tone) and do it yourself with the usual actions.`;
@@ -363,8 +323,9 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
     $('st').className = `badge ${badgeClass(s)}`;
     if (id) window.api.status(id, s);
   };
-  // One log row: muted label column + content (e.g. "step 01 | dir /b").
-  // Live activity card: a collapsible task header + an animated step tree (plan steps are folders, actions are their children).
+  // Live activity card = the agent's trace (chain of thought): a header + an animated step tree (plan steps are folders,
+  // actions are their children). A step's output (files found, sites, command output, the model's reasoning) sits one
+  // level down. When the task ends the card folds into one summary line ("Done in 4 steps · 6.2s") that reopens.
   const live = (() => {
     let el = null, root = null, tEl = null, t0 = 0, timer = 0, cur = null, groups = [], curGroup = null;
     const fmt = (ms) => `${(ms / 1000).toFixed(ms < 10000 ? 1 : 0)}s`;
@@ -372,6 +333,7 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
     const finish = (leaf, ok = true) => {
       if (!leaf) return;
       const li = leaf.li; li.classList.remove('on'); li.classList.add(ok ? 'ok' : 'bad');
+      if (leaf.think) { li.querySelector('b').textContent = 'Thought'; li.querySelector('.det').replaceChildren(); }
       leaf.state = ok ? 'done' : 'bad'; leaf.ms = Date.now() - leaf.t0; li.querySelector('.ms').textContent = fmt(leaf.ms);
     };
     const kidsOf = () => (curGroup ? curGroup.ul : root);
@@ -380,14 +342,16 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
       el: () => el,
       slot: () => el?.querySelector('.lorb'),
       start(task = '') {
-        this.stop(); groups = []; curGroup = null;
+        if (el) { clearInterval(timer); el.remove(); el = null; cur = null; } // a card still open (router try): replaced
+        groups = []; curGroup = null;
         el = document.createElement('div');
         el.className = 'live';
         el.dataset.phase = 'working';
-        el.innerHTML = `<div class="lhead"><span class="lorb orb-slot"></span><button type="button" class="ltask" title="Show / hide the steps"><i class="chev"></i><span class="lt"></span></button><span class="ltime">0.0s</span><button type="button" class="lstop" title="Stop (Esc)"><i></i>stop</button></div>
+        el.innerHTML = `<div class="lhead"><span class="lorb orb-slot"></span><button type="button" class="ltask" title="Show / hide the steps"><i class="chev"></i><span class="lt"></span></button><span class="ldesc"></span><span class="ltime">0.0s</span><button type="button" class="lstop" title="Stop (Esc)"><i></i>stop</button></div>
           <div class="lphase"><em>working</em><span class="dots"><i></i><i></i><i></i></span></div>
           <div class="lbody"><ul class="tree"></ul></div><div class="shimmer"></div>`;
         el.querySelector('.lt').textContent = task;
+        el.title = task;
         el.querySelector('.ltask').onclick = () => el.classList.toggle('collapsed');
         el.querySelector('.lstop').onclick = () => $('stop').click();
         root = el.querySelector('.tree'); tEl = el.querySelector('.ltime'); t0 = Date.now();
@@ -420,29 +384,52 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
           open(g, g.state === 'now');
         });
         curGroup = groups[idx - 1] || null;
+        const done = groups.filter((g) => g.state === 'done').length;
+        el.querySelector('.ldesc').textContent = `${done} of ${groups.length} done`;
       },
       // Mark the current line done and start a new animated one.
       step(label, detail = '') {
         if (!el) return;
-        const phase = /^thinking/.test(label) ? 'thinking' : 'working';
+        const think = /^(thinking|understanding)/.test(label);
+        const phase = think ? 'thinking' : 'working';
         el.dataset.phase = phase;
         el.querySelector('.lphase em').textContent = phase;
         finish(cur);
         const li = document.createElement('li');
         li.className = 'leaf on';
         li.innerHTML = '<i class="ind"></i><span class="lt2"><b></b> <span class="det"></span></span><span class="ms"></span>';
-        li.querySelector('b').textContent = label;
+        li.querySelector('b').textContent = think ? 'Thinking' : label.replace(/^./, (c) => c.toUpperCase());
+        if (think) li.classList.add('think');
         const d = String(detail).split('\n')[0].slice(0, 90);
-        if (d) li.querySelector('.det').append(code(d));
-        cur = { li, t0: Date.now(), state: 'now', text: `${label}${d ? ` ${d}` : ''}` };
+        if (d && !/^thinking/.test(label)) li.querySelector('.det').append(code(d));
+        cur = { li, t0: Date.now(), state: 'now', think, text: `${label}${d ? ` ${d}` : ''}` };
         const host = kidsOf();
         host.append(li);
         if (curGroup) { curGroup.kids.push(cur); curGroup.li.querySelector('.gn').textContent = curGroup.kids.length; }
-        else while (host.children.length > 6) host.firstChild.remove();
         log.scrollTop = log.scrollHeight;
       },
       detail(t) { const d = cur?.li.querySelector('.det'); if (d) d.replaceChildren(code(t)); },
       fail() { finish(cur, false); cur = null; },
+      // Output under the current step (a node or text). The step becomes a button that opens / closes it.
+      out(node, open = true) {
+        if (!cur) return null;
+        const li = cur.li;
+        let box = li.querySelector(':scope > .lout');
+        if (!box) {
+          box = document.createElement('div'); box.className = 'lout';
+          const ch = document.createElement('i'); ch.className = 'chev';
+          li.querySelector('.ms').after(ch);
+          li.append(box); li.classList.add('has');
+          li.onclick = (e) => { if (!e.target.closest('.lout')) li.classList.toggle('open'); };
+        }
+        li.classList.toggle('open', open);
+        if (typeof node === 'string') { const t = document.createElement('div'); t.className = 'lo-t'; t.textContent = node; node = t; }
+        box.append(node);
+        log.scrollTop = log.scrollHeight;
+        return node;
+      },
+      // The model's reasoning ("decided") goes inside its Thinking/Thought step, closed: the answer comes first.
+      reason(t) { if (cur?.think) { const n = document.createElement('div'); n.className = 'lo-t reason'; n.textContent = t; this.out(n, false); return true; } return false; },
       // For the floating plan widget: plan steps with their actions.
       snapshot(upTo, end) {
         const rows = groups.map((g, i) => ({
@@ -452,9 +439,20 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
         return rows;
       },
       hasPlan: () => groups.length > 0,
-      stop(ok = true) {
+      // Fold into the summary line. A turn with no real step (a chat answer) leaves no trace at all.
+      stop(ok = true, label = '') {
         clearInterval(timer);
-        if (el) { finish(cur, ok); cur = null; el.remove(); el = null; }
+        if (!el) return;
+        finish(cur, ok); cur = null;
+        const n = el.querySelectorAll('li.leaf:not(.think)').length;
+        if (!n) { el.remove(); el = null; return; }
+        tEl.textContent = fmt(Date.now() - t0);
+        el.classList.add('past', 'collapsed'); el.dataset.phase = ok ? 'done' : 'bad';
+        const steps = `${n} step${n === 1 ? '' : 's'}`;
+        el.querySelector('.lt').textContent = label ? `${label} ${steps}` : ok ? `Done in ${steps}` : `Couldn't finish · ${steps}`;
+        el.querySelector('.ltask').setAttribute('aria-expanded', 'false');
+        el.querySelector('.ltask').onclick = () => { const o = el2.classList.toggle('collapsed'); el2.querySelector('.ltask').setAttribute('aria-expanded', !o); };
+        const el2 = el; el = null;
       },
     };
   })();
@@ -541,18 +539,19 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
     const group = `g${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`;
     const card = document.createElement('div');
     card.className = 'team';
-    card.innerHTML = '<div class="tm-h"><b>Team</b><span class="tm-c"></span><div class="tm-bar"><i></i></div></div><ul></ul>';
+    // Queue: two sections, Working and Done, each a line with its count that opens onto its agents.
+    card.innerHTML = '<div class="q-sec open q-work"><button type="button" class="q-h" aria-expanded="true"><i class="chev"></i><b></b></button><ul></ul></div><div class="q-sec q-done" hidden><button type="button" class="q-h" aria-expanded="false"><i class="chev"></i><b></b></button><ul></ul></div>';
+    card.querySelectorAll('.q-h').forEach((h) => { h.onclick = () => { const o = h.parentElement.classList.toggle('open'); h.setAttribute('aria-expanded', o); }; });
     const rows = jobs.map((j, i) => {
       const li = document.createElement('li');
       li.innerHTML = '<i class="ind"></i><div><b></b><span class="tm-t"></span><span class="tm-r"></span></div>';
       li.querySelector('b').textContent = `${j.web ? 'Browser agent' : 'Agent'} ${i + 1}`;
       li.querySelector('.tm-t').textContent = j.task.replace(/\s+/g, ' ');
-      card.querySelector('ul').append(li);
+      card.querySelector('.q-work ul').append(li);
       return li;
     });
     teams.set(group, { card, rows, total: jobs.length, done: 0, ok: 0, results: [] });
-    const count = card.querySelector('.tm-c');
-    count.textContent = `0/${jobs.length} done`;
+    card.querySelector('.q-work b').textContent = `${jobs.length} working`;
     log.append(card);
     log.scrollTop = log.scrollHeight;
     window.api.openMany(jobs.map((j, idx) => ({ kind: 'agent', task: j.task, opts: { child: true, web: j.web, group, idx } })));
@@ -564,8 +563,11 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
     li.className = info.ok ? 'ok' : 'bad';
     li.querySelector('.tm-r').textContent = info.summary || (info.stopped ? 'stopped' : info.ok ? 'done' : "couldn't finish");
     t.done++; if (info.ok) t.ok++;
-    t.card.querySelector('.tm-c').textContent = `${t.done}/${t.total} done`;
-    t.card.querySelector('.tm-bar i').style.width = `${(t.done / t.total) * 100}%`;
+    t.card.querySelector('.q-done ul').append(li);
+    t.card.querySelector('.q-done').hidden = false;
+    t.card.querySelector('.q-done b').textContent = `${t.done} done`;
+    t.card.querySelector('.q-work b').textContent = `${t.total - t.done} working`;
+    t.card.querySelector('.q-work').hidden = t.done === t.total;
     if (t.done === t.total) {
       const line = t.ok === t.total ? `all ${t.total} agents finished ✅` : `${t.ok} of ${t.total} agents finished, the rest hit a wall 😬`;
       print('ai', line, '›');
@@ -584,6 +586,7 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
   const kindOf = (msg) => !navigator.onLine || /fetch failed|ENOTFOUND|ECONN|ETIMEDOUT|ENETUNREACH|EAI_AGAIN|getaddrinfo|network|socket hang up|ERR_INTERNET|Failed to fetch/i.test(msg) ? 'offline'
     : /No API key/i.test(msg) ? 'nokey' : /daily limit/i.test(msg) ? 'limit' : /rate.?limit|429|busy|quota|exhausted/i.test(msg) ? 'busy' : 'other';
   const problem = (msg, retryTask) => {
+    document.body.classList.remove('log-hidden');
     const k = kindOf(String(msg)), [t, d, ico] = PROB[k];
     const c = document.createElement('div');
     c.className = `prob ${k}`;
@@ -606,43 +609,70 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
     log.scrollTop = log.scrollHeight;
     return k;
   };
+  const showChat = () => document.body.classList.remove('log-hidden'); // Script Writer: a question or a problem must be seen
   const print = (cls, text, label = '') => {
+    if (cls === 'ask' || cls === 'err') showChat();
     const d = document.createElement('div');
     d.className = `row ${cls}`;
     d.innerHTML = '<span class="lbl"></span><span class="txt"></span>';
     d.firstChild.textContent = label;
-    if (cls === 'ai' && revealNext) focusReveal(d.lastChild, text); else if (cls === 'ai') focusReveal(d.lastChild, text, true); else d.lastChild.textContent = text;
-    if (cls === 'ai') revealNext = false;
+    if (cls === 'ai' && /```/.test(text)) { // answer with code: paragraphs + code blocks (Script Writer: into the editor)
+      let toEd = !!ed;
+      for (const p of splitFences(text)) {
+        if (p.code != null && toEd) { ed.open('', p.code.replace(/\n+$/, ''), `script.${EXT[p.lang.toLowerCase()] || p.lang.toLowerCase() || 'txt'}`); toEd = false; d.lastChild.append(Object.assign(document.createElement('div'), { className: 'para dim', textContent: '← in the editor (not saved yet: Ctrl+S)' })); }
+        else if (p.code != null && /^(env|dotenv)$/i.test(p.lang) && parseEnv(p.code).length) d.lastChild.append(envCard(parseEnv(p.code)));
+        else if (p.code != null) d.lastChild.append(codeBlock(p.code, { lang: p.lang }));
+        else { const t = document.createElement('div'); t.className = 'para'; t.textContent = p.text; d.lastChild.append(t); }
+      }
+      revealNext = false;
+    } else if (cls === 'ai' && revealNext) focusReveal(d.lastChild, text); else if (cls === 'ai') focusReveal(d.lastChild, text, true); else d.lastChild.textContent = text;
+    if (cls === 'ai') { revealNext = false; addCitations(d.lastChild, cites, { open: (u) => window.api.openPath(u) }); }
     log.append(d);
     log.scrollTop = log.scrollHeight;
     return d;
   };
   const techPrint = (...a) => (DEV ? print(...a) : null); // internals: dev runs only
+  const EXT = { python: 'py', py: 'py', javascript: 'js', js: 'js', node: 'js', typescript: 'ts', ts: 'ts', powershell: 'ps1', ps1: 'ps1', bash: 'sh', sh: 'sh', shell: 'sh', bat: 'bat', batch: 'bat', cmd: 'bat', html: 'html', css: 'css', json: 'json', java: 'java', c: 'c', cpp: 'cpp', csharp: 'cs', go: 'go', rust: 'rs', sql: 'sql', yaml: 'yml' };
+  let cites = []; // web sources of the current task, numbered as the AI saw them: "[2]" in an answer = cites[1]
+  let changes = []; // files this task added / changed / deleted, for the changed-files card
   if (mode !== 'runner' && !orbOK) print('dim', mode === 'script' ? 'Describe a script; I will write, save and test it.  F1 for shortcuts.' : 'Tell me what to do on your PC.  F1 for shortcuts.', '');
 
-  // Inline Run/Skip prompt so this agent waits without blocking any other window.
-  const ask = (msg) => new Promise((resolve) => {
-    const d = print('warn', msg, 'confirm');
-    setSt('waiting for you');
-    const br = document.createElement('div');
-    for (const [label, val] of [['run', true], ['skip', false]]) {
-      const b = document.createElement('button');
-      b.className = 'btn';
-      b.textContent = label;
-      b.onclick = () => { br.remove(); print('dim', label === 'run' ? 'approved' : 'skipped', ''); resolve(val); };
-      br.append(b);
-    }
-    d.lastChild.append(br);
-  });
+  // Confirmation before something that changes the PC: what will run, word for word, then Deny / Approve.
+  // Waits inline, so other windows keep working. ask("Title?\nexact command") also works: the rest becomes the code.
+  const ask = async (msg, o = {}) => {
+    const [first, ...rest] = String(msg).split('\n');
+    setSt('waiting for you'); showChat();
+    const yes = await confirmItem(log, { title: first, code: o.code ?? rest.join('\n').trim(), desc: o.desc || '', danger: !!o.danger });
+    log.scrollTop = log.scrollHeight;
+    setSt(yes ? 'running' : 'thinking');
+    return yes;
+  };
+  setTimeout(() => { log.scrollTop = log.scrollHeight; });
 
   async function writeFile({ path, content }) {
+    // Script Writer: the AI writes into the user's editor buffer, never to disk; the user saves it where they want.
+    if (ed) {
+      const name = String(path).split(/[\\/]/).pop() || 'script.txt';
+      ed.open('', content, name);
+      live.detail(`${name}  +${content.split('\n').length}`);
+      return `Put ${name} in the user's editor (not saved to disk: the user saves and runs it). Do not try to run it.`;
+    }
     let r = await window.api.write(path, content, false);
+    let before = null;
     if (r.exists) {
-      if (!(await ask(`Overwrite existing file?\n${r.full}`))) return `User refused to overwrite ${r.full}.`;
+      before = await window.api.readText(r.full).catch(() => null);
+      if (before !== content && !(await ask(`Replace ${r.full.split(/[\\/]/).pop()}?`, { code: r.full, desc: 'This file already exists. Approve writes the new version over it.' }))) return `User refused to overwrite ${r.full}.`;
       r = await window.api.write(path, content, true);
     }
-    print('file', `${r.full}  +${content.split('\n').length}`, 'write');
-    if (ed) { ed.open(r.full, content); document.body.classList.remove('log-hidden'); }
+    const { add, del } = before == null ? { add: content.split('\n').length, del: 0 } : lineDiff(before, content);
+    changes.push({ status: before == null ? 'A' : 'M', path: r.full, add, del });
+    live.detail(`${r.full.split(/[\\/]/).pop()}  +${add}${del ? ` −${del}` : ''}`);
+    {
+      const d = print('code', '', '');
+      const env = /(^|[\\/])\.env(\.[\w.-]+)?$/i.test(r.full) ? parseEnv(content) : [];
+      d.lastChild.append(env.length ? envCard(env, { title: r.full.split(/[\\/]/).pop() }) : codeBlock(content, { path: r.full }));
+      log.scrollTop = log.scrollHeight;
+    }
     return `Wrote file ${r.full}.`;
   }
 
@@ -650,10 +680,9 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
   async function browse(web) {
     const kind = web.search ? 'search' : 'read';
     const q = String(web.search || web.read || '');
-    const d = print('web', q, kind);
     const g = document.createElement('div');
     g.className = 'globe-host';
-    d.lastChild.prepend(g);
+    live.out(g);
     let stop = () => {};
     (ANIM.globe ? mountGlobe(g, mode === 'agent' ? 96 : 120) : Promise.reject(new Error('off'))).then((fn) => { stop = fn; if (!g.isConnected) fn(); }).catch(() => { // cobe missing: old ASCII globe
       const pre = document.createElement('pre'); pre.className = 'globe'; g.append(pre); stop = spin(pre, mode === 'agent' ? 26 : 34, mode === 'agent' ? 11 : 15);
@@ -663,14 +692,15 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
       const r = await window.api.web(kind, q);
       if (kind === 'search') {
         const res = r.results || [];
-        print('out', res.length ? `${res.map((x, i) => `${i + 1}. ${x.title}\n   ${x.url}`).join('\n')}${r.pages?.length ? `\n(read ${r.pages.length} page${r.pages.length > 1 ? 's' : ''} for you)` : ''}` : 'no results', 'found');
-        return `Web search "${q}":\n${res.map((x, i) => `${i + 1}. ${x.title} — ${x.url}\n   ${x.snippet}`).join('\n') || 'no results'}${(r.pages || []).map((p) => `\n\nPAGE ${p.url} "${p.title}":\n${p.text}`).join('')}\n\n(The top pages are already included above: answer now if you can.)`;
+        const num = res.map((x) => { const at = cites.findIndex((c) => c.url === x.url); return at >= 0 ? at + 1 : cites.push({ url: x.url, title: x.title, snippet: x.snippet }); });
+        if (res.length) live.out(sourceChips(res, { open: (u) => window.api.openPath(u) })); else live.out('no results');
+        return `Web search "${q}":\n${res.map((x, i) => `[${num[i]}] ${x.title} — ${x.url}\n   ${x.snippet}`).join('\n') || 'no results'}${(r.pages || []).map((p) => `\n\nPAGE ${p.url} "${p.title}":\n${p.text}`).join('')}\n\n(The top pages are already included above: answer now if you can.)`;
       }
-      print('out', `${r.title || r.url} · ${r.text.length} chars`, 'read');
+      live.out(`${r.title || r.url} · ${r.text.length} chars`);
       return `Page ${r.url} (HTTP ${r.status}) "${r.title}":\n${r.text}`;
     } catch (e) {
       const wm = e.message.replace(/^Error invoking remote method 'web': (Error: )?/, '');
-      if (kindOf(wm) === 'offline') problem(wm); else print('err', "Couldn't load that page.", 'web');
+      if (kindOf(wm) === 'offline') problem(wm); else { live.out("Couldn't load that page."); live.fail(); }
       return `Web ${kind} failed: ${e.message}`;
     } finally {
       stop();
@@ -684,10 +714,10 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
     if (!m) { print('dim', 'offline and nothing similar in memory yet', 'memory'); return false; }
     if (m.cmds.some(serious)) { print('dim', 'a similar task used a serious command, so it is not replayed from memory', 'memory'); return false; }
     print('mem', `"${m.task}" worked before (${m.uses}×):\n${m.cmds.join('\n')}`, 'memory');
-    if (!(await ask('Run the remembered command?'))) return false;
+    if (!(await ask('Run the remembered command?', { code: m.cmds.join('\n') }))) return false;
     let worked = true;
     for (const c of m.cmds) {
-      if (isRisky(c) && !(await ask(`Risky command:\n${c}`))) { worked = false; break; }
+      if (isRisky(c) && !(await ask('Run this command?', { code: c, desc: 'This changes things on your PC.', danger: true }))) { worked = false; break; }
       setSt('running');
       const { code, out } = await window.api.run(c);
       if (out.trim()) print('out', out.trim(), 'out');
@@ -711,7 +741,7 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
     again.onclick = () => { if (!running) loop(`! ${task}`); };
     row.lastChild.append(' ', again);
     for (const c of m.cmds) {
-      if (isRisky(c) && !(await ask(`Risky command:\n${c}`))) { live.stop(false); await window.api.db('useMemory', m.id, false); return false; }
+      if (isRisky(c) && !(await ask('Run this command?', { code: c, desc: 'This changes things on your PC.', danger: true }))) { live.stop(false); await window.api.db('useMemory', m.id, false); return false; }
     }
     setSt('running');
     const { code, out } = await window.api.runBat(m.id);
@@ -918,6 +948,7 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
     if (fastInfo) TM.fastTry = fastInfo.ms;
     const p0 = performance.now();
     const P = await getPrefs(); // re-read each task so Settings changes apply in every window
+    cites = []; changes = [];
     live.start(task);
     orbToLive();
     live.step('understanding your request', task);
@@ -927,7 +958,7 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
     let lastSay = '';
     // Fresh folder snapshot + personality/profile/memory each task.
     const open = ed?.current();
-    history[0].content = `${prompt}\n\n${await promptExtras(task, P)}\n\nPC CONTEXT:\n${await window.api.context(task)}${open ? `\n\nOPEN IN THE EDITOR (the user may have edited it; build on this version):\n${open.path}\n${open.text.slice(0, 12000)}` : ''}`;
+    history[0].content = `${prompt}\n\n${await promptExtras(task, P)}\n\nPC CONTEXT:\n${await window.api.context(task)}${open ? `\n\nOPEN IN THE EDITOR (the user may have edited it; build on this version):\n${open.path}\n${open.text.slice(0, 12000)}` : ''}${ed?.folder() ? `\n\nFOLDER OPEN IN THE EDITOR: ${ed.folder().root}\n${ed.folder().files.join('\n')}` : ''}`;
     tadd('promptBuild', performance.now() - p0);
     // Keep the prompt small: system + the last 2 tasks; older tool results cut to 1,500 chars.
     if (taskStarts.length >= 2) {
@@ -963,16 +994,13 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
         print('ai', 'got a second opinion, trying a totally different way now 🫡', '›');
       } catch { /* carry on without it */ }
     };
-    const planItems = (upTo, end) => (live.hasPlan() ? live.snapshot(upTo, end) : [...(plan?.querySelectorAll('li') || [])].map((li, i) => ({ text: li.textContent, state: i + 1 < upTo ? 'done' : i + 1 === upTo ? (end ? 'todo' : 'now') : 'todo' })));
+    const planItems = (upTo, end) => live.snapshot(upTo, end);
     const rowCount = (items) => items.reduce((n, g) => n + 1 + (g.state === 'now' ? (g.kids?.length || 0) : 0), 0);
     let planFresh = true;
     let curStep = 1;
     const tick = (upTo) => {
       if (!plan) return;
       curStep = upTo;
-      const lis = [...plan.querySelectorAll('li')];
-      lis.forEach((li, i) => { li.className = i + 1 < upTo ? 'ok' : i + 1 === upTo ? 'now' : ''; });
-      plan.querySelector('.pbar i').style.width = `${Math.min(100, ((Math.min(upTo, lis.length + 1) - 1) / lis.length) * 100)}%`;
       live.focus(upTo);
       const items = planItems(upTo);
       window.api.todo({ agent: id, fresh: planFresh, finished: upTo === Infinity, title: task.slice(0, 70), items, rows: rowCount(items) });
@@ -1017,13 +1045,9 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
         break;
       }
       if (reply.cmd) reply.cmd = fixCmd(reply.cmd);
-      if (Array.isArray(reply.plan) && reply.plan.length && !plan) {
-        plan = document.createElement('div');
-        plan.className = 'box plan';
-        plan.innerHTML = '<span class="legend">plan</span><div class="pbar"><i></i></div><ol></ol>';
-        for (const s of reply.plan) { const li = document.createElement('li'); li.textContent = s; plan.lastChild.append(li); }
-        log.append(plan);
-        live.plan(reply.plan.map(String));
+      if (Array.isArray(reply.plan) && reply.plan.length && !plan) { // the plan = the trace's top level, "2 of 4 done" in its header
+        plan = reply.plan.map(String);
+        live.plan(plan);
         tick(1);
       }
       if (reply.step) tick(Number(reply.step));
@@ -1033,7 +1057,12 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
         print('ai', reply.say, '›');
         lastSay = reply.say;
       }
-      if (reply.decided) print('decided', reply.decided, 'decided');
+      if (reply.code?.text) { // code to show: a code block here, or straight into the Script Writer's editor
+        const lang = String(reply.code.lang || '').toLowerCase(), text = String(reply.code.text);
+        if (ed) ed.open('', text, `script.${EXT[lang] || lang || 'txt'}`);
+        else { const d = print('code', '', ''); d.lastChild.append(/^(env|dotenv)$/.test(lang) && parseEnv(text).length ? envCard(parseEnv(text)) : codeBlock(text, { lang })); log.scrollTop = log.scrollHeight; }
+      }
+      if (reply.decided && !live.reason(String(reply.decided))) print('decided', reply.decided, 'decided');
       if (reply.learn?.text && P.learning) {
         const kind = ['interest', 'trait', 'fact'].includes(reply.learn.kind) ? reply.learn.kind : 'fact';
         await window.api.db('addProfile', kind, String(reply.learn.text).slice(0, 200));
@@ -1082,62 +1111,57 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
         const pd = { action: String(reply.do.action), params: reply.do.params && typeof reply.do.params === 'object' ? reply.do.params : {} };
         const say = describe(pd.action, pd.params);
         live.step('working', say);
-        print('cmd', say, '');
         let r = await window.api.fast(pd.action, pd.params);
         if (r.status === 'confirm') r = (await ask(r.preview)) ? await window.api.fast(pd.action, pd.params, true) : { status: 'refused' };
-        if (r.status === 'done') { print('out', r.message, ''); results.push(`Done: ${r.message}`); webSteps++; }
+        if (r.status === 'done') { live.out(r.message, false); results.push(`Done: ${r.message}`); webSteps++; }
         else if (r.status === 'refused') results.push('The user said no to that. Choose another way or finish.');
-        else { results.push(`That built-in control failed: ${r.reason || r.message || 'unknown'}. Try another way.`); stepFailed = true; }
+        else { results.push(`That built-in control failed: ${r.reason || r.message || 'unknown'}. Try another way.`); stepFailed = true; live.fail(); }
       }
       if (reply.app?.name && !stopped) {
         live.step('opening app', reply.app.name);
-        print('cmd', `Opening ${reply.app.name}${reply.app.file ? ` with ${reply.app.file}` : ''}`, 'app');
         const lr = await tm('launchApp', window.api.launchApp(reply.app.name, reply.app.file));
-        if (lr.ok) { ran.push(`start "" "${lr.exe}"${reply.app.file ? ` "${reply.app.file}"` : ''}`); results.push(`Launched ${lr.exe}`); print('out', DEV ? `launched ${lr.exe}` : `${reply.app.name} opened`, 'app'); }
-        else { results.push(`${reply.app.name} is NOT installed (checked Start Menu and Program Files). Tell the user; offer an alternative or a download link.`); stepFailed = true; print('err', `${reply.app.name} not found`, 'app'); }
+        if (lr.ok) { ran.push(`start "" "${lr.exe}"${reply.app.file ? ` "${reply.app.file}"` : ''}`); results.push(`Launched ${lr.exe}`); if (DEV) live.out(lr.exe, false); }
+        else { results.push(`${reply.app.name} is NOT installed (checked Start Menu and Program Files). Tell the user; offer an alternative or a download link.`); stepFailed = true; live.out(`${reply.app.name} is not installed`); live.fail(); }
       }
       if (reply.trash?.length && !stopped) {
         const list = [].concat(reply.trash).map(String);
         live.step('moving to the Recycle Bin', `${list.length} item${list.length === 1 ? '' : 's'}`);
-        print('cmd', DEV ? `trash ${list.map((q) => `"${q}"`).join(' ')}` : `Moving ${list.length} item${list.length === 1 ? '' : 's'} to the Recycle Bin`, 'trash');
-        if (list.length > 10 && !(await ask(`Move ${list.length} items to the Recycle Bin?`))) { results.push('User refused to trash these. Finish or choose another way.'); allOk = false; }
+        if (list.length > 10 && !(await ask(`Move ${list.length} items to the Recycle Bin?`, { code: list.join('\n'), desc: 'You can get them back from the Recycle Bin.' }))) { results.push('User refused to trash these. Finish or choose another way.'); allOk = false; }
         else {
           const r = await window.api.trash(list);
           const good = r.filter((x) => x.ok), bad = r.filter((x) => !x.ok);
-          if (good.length) { results.push(`Moved to the Recycle Bin (can be restored with "restore"): ${good.map((x) => x.path).join(' | ')}`); print('out', `moved ${good.length} item${good.length === 1 ? '' : 's'} to the Recycle Bin (undoable)`, 'trash'); webSteps++; }
-          if (bad.length) { results.push(`Could not trash: ${bad.map((x) => `${x.path} (${x.error})`).join(' | ')}`); stepFailed = true; print('err', `couldn't remove ${bad.length} item${bad.length === 1 ? '' : 's'}: ${bad[0].error}`, 'trash'); }
+          if (good.length) { results.push(`Moved to the Recycle Bin (can be restored with "restore"): ${good.map((x) => x.path).join(' | ')}`); live.out(`moved ${good.length} item${good.length === 1 ? '' : 's'} to the Recycle Bin (undoable)`, false); for (const x of good) changes.push({ status: 'D', path: x.path }); webSteps++; }
+          if (bad.length) { results.push(`Could not trash: ${bad.map((x) => `${x.path} (${x.error})`).join(' | ')}`); stepFailed = true; live.out(`couldn't remove ${bad.length} item${bad.length === 1 ? '' : 's'}: ${bad[0].error}`); live.fail(); }
         }
       }
       if (reply.restore && !stopped) {
         live.step('restoring from the Recycle Bin', String(reply.restore));
-        print('cmd', `Restoring "${reply.restore}"`, 'restore');
         const r = await window.api.restoreTrash(String(reply.restore));
-        if (r.ok) { results.push(`Restored from the Recycle Bin: ${r.text}`); print('out', 'restored from the Recycle Bin', 'restore'); webSteps++; }
-        else { results.push(`Nothing matching "${reply.restore}" in the Recycle Bin (${r.text}). It may have been deleted permanently: offer Windows File Recovery (winfr) or OneDrive/Previous Versions.`); stepFailed = true; print('err', 'not in the Recycle Bin', 'restore'); }
+        if (r.ok) { results.push(`Restored from the Recycle Bin: ${r.text}`); live.out(String(r.text), false); changes.push({ status: 'R', path: String(reply.restore) }); webSteps++; }
+        else { results.push(`Nothing matching "${reply.restore}" in the Recycle Bin (${r.text}). It may have been deleted permanently: offer Windows File Recovery (winfr) or OneDrive/Previous Versions.`); stepFailed = true; live.out('not in the Recycle Bin'); live.fail(); }
       }
       if (reply.find?.name && !stopped) {
         live.step('searching your files', reply.find.name);
-        print('cmd', DEV ? `find "${reply.find.name}"${reply.find.in ? ` in ${reply.find.in}` : ''}${reply.find.ext ? ` .${String(reply.find.ext).replace(/^\./, '')}` : ''}` : `Looking for "${reply.find.name}"`, 'find');
         try {
           const r = await tm('find', window.api.find(reply.find));
           // "ep 1", "v2", "2024" decide between near-identical names (the user's words if the AI left the numbers out)
           r.matches = byNumbers(/\d/.test(reply.find.name) ? reply.find.name : task, r.matches || []);
           const [a, b] = r.matches;
           const clear = a && a.score >= 0.75 && (!b || a.score - b.score >= 0.08);
-          if (!a) { results.push(`find found nothing for "${reply.find.name}"${r.partial ? ' (search timed out)' : ''}. Try other words, another folder, or no folder.`); stepFailed = true; print('err', 'no match', 'find'); }
+          if (a) live.out(fileTree(r.matches.slice(0, 8).map((m) => m.path), { current: clear ? a.path : '', open: (f) => window.api.openPath(f) }));
+          if (!a) { results.push(`find found nothing for "${reply.find.name}"${r.partial ? ' (search timed out)' : ''}. Try other words, another folder, or no folder.`); stepFailed = true; live.out(`nothing found for "${reply.find.name}"`); live.fail(); }
           else if (reply.find.open && clear && reply.find.with) {
             live.step('opening with', reply.find.with);
             const lr = await tm('launchApp', window.api.launchApp(reply.find.with, a.path));
-            if (lr.ok) { ran.push(`start "" "${lr.exe}" "${a.path}"`); results.push(`Found ${a.path} and opened it with ${lr.exe}`); print('out', `opened ${a.path} with ${reply.find.with}`, 'open'); }
-            else { results.push(`Found ${a.path} but ${reply.find.with} is NOT installed (checked Start Menu and Program Files). Tell the user and ask if the default player is fine (options).`); stepFailed = true; print('err', `${reply.find.with} is not installed`, 'open'); }
+            if (lr.ok) { ran.push(`start "" "${lr.exe}" "${a.path}"`); results.push(`Found ${a.path} and opened it with ${lr.exe}`); }
+            else { results.push(`Found ${a.path} but ${reply.find.with} is NOT installed (checked Start Menu and Program Files). Tell the user and ask if the default player is fine (options).`); stepFailed = true; live.out(`${reply.find.with} is not installed`); live.fail(); }
           } else if (reply.find.open && clear) {
             live.step('opening', a.path);
             const err = await tm('openPath', window.api.openPath(a.path));
-            if (err) { results.push(`Found ${a.path} but opening failed: ${err}`); stepFailed = true; print('err', err, 'open'); }
-            else { ran.push(`start "" "${a.path}"`); results.push(`Found and opened ${a.path}`); print('out', `opened ${a.path}`, 'open'); }
+            if (err) { results.push(`Found ${a.path} but opening failed: ${err}`); stepFailed = true; live.out(err); live.fail(); }
+            else { ran.push(`start "" "${a.path}"`); results.push(`Found and opened ${a.path}`); }
           } else {
             results.push(`find matches (score, path):\n${r.matches.map((m) => `${m.score} ${m.path}`).join('\n')}\n${reply.find.open ? 'Not opened: no single clear best match. Ask the user which one (use options), or pick if obvious.' : ''}`);
-            techPrint('out', r.matches.slice(0, 5).map((m) => `${m.score}  ${m.path}`).join('\n'), 'find');
             if (reply.find.open) stepFailed = true;
           }
         } catch (e) { results.push(`find failed: ${e.message}`); stepFailed = true; }
@@ -1154,27 +1178,24 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
       if (reply.cmd?.trim() && !stopped) {
         const plainStep = String(reply.step || '').trim() || 'Working on your PC';
         live.step('working', DEV ? reply.cmd : plainStep);
-        const cmdRow = print('cmd', DEV ? reply.cmd : plainStep, DEV ? `step ${String(ran.length + 1).padStart(2, '0')}` : '');
-        cmdRow.classList.add('running');
-        const cmdT0 = Date.now();
-        const cmdDone = (okk) => { cmdRow.classList.remove('running'); cmdRow.classList.add(okk ? 'ok' : 'bad'); const t = document.createElement('span'); t.className = 'dur'; t.textContent = `${okk ? '✓' : '✗'} ${((Date.now() - cmdT0) / 1000).toFixed(1)}s`; cmdRow.lastChild.append(t); };
-        if (isRisky(reply.cmd) && !(await ask(DEV ? `Risky command:\n${reply.cmd}` : `${String(reply.say || reply.step || 'This will change things on your PC').trim()}. Go ahead?`))) {
+        if (isRisky(reply.cmd) && !(await ask(`${String(reply.step || 'Run this command').trim().replace(/[.?!]+$/, '')}?`, { code: reply.cmd, desc: 'This changes things on your PC.', danger: true }))) {
+          live.out('denied'); live.fail();
           results.push('User refused to run this command. Choose another way or finish.');
           allOk = false;
         } else {
           setSt('running');
           const { code, out } = await tm('cmdRun', window.api.run(reply.cmd));
           ran.push(reply.cmd);
-          if (out.trim()) techPrint('out', out.trim(), 'out');
+          if (DEV) live.out(codeBlock(`${reply.cmd}${out.trim() ? `\n\n${out.trim()}` : ''}`, { title: 'Command and output', lang: 'text' }), false);
           // dir/where/findstr exit 1 just means "nothing matched": not an error, no need for deep thinking.
           const soft = code === 1 && /^\s*(dir|where|findstr|tasklist|fc)\b/i.test(reply.cmd);
           let openedByApp = false;
           if (code && !soft) {
             // `start` can fail on odd file types: retry through the OS default-app opener.
             const m = reply.cmd.match(/^\s*start\s+""\s+"([^"]+)"\s*$/i);
-            if (m && !/^https?:/i.test(m[1]) && !(await window.api.openPath(m[1]))) { openedByApp = true; print('out', `opened ${m[1]} (via default app)`, 'open'); }
+            if (m && !/^https?:/i.test(m[1]) && !(await window.api.openPath(m[1]))) { openedByApp = true; live.out(`opened ${m[1]} with its default app`, false); }
           }
-          if (code && !soft && !openedByApp) { techPrint('err', `exit ${code}`, ''); think = true; allOk = false; stepFailed = true; }
+          if (code && !soft && !openedByApp) { if (DEV) live.out(`exit ${code}`); live.fail(); think = true; allOk = false; stepFailed = true; }
           else if (soft && code) techPrint('dim', code && !out.trim() ? 'no match' : 'ok (exit 1 = partial match)', '');
           if (out.includes('[killed after 60s')) window.api.notify('problem', `A command for "${task.slice(0, 60)}" timed out after 60s.`);
           results.push(`Command exit code ${openedByApp ? 0 : code}${soft && !out.trim() ? ' (nothing matched)' : ''}\n${out}${openedByApp ? '\n(file opened via the default app)' : ''}`);
@@ -1207,11 +1228,11 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
       if (reply.done || (!acted && !stepFailed && reply.say)) { tick(Infinity); break; }
       if (step === limit()) { print('err', `Stopped after ${limit()} steps.`, 'limit'); failed = true; }
     }
-    live.stop(!failed && !stopped);
+    live.stop(!failed && !stopped, stopped ? 'Stopped after' : '');
+    if (changes.length >= 2) { log.append(changesCard(changes, { message: `Changed ${changes.length} files: ${task.replace(/\s+/g, ' ').slice(0, 70)}`, open: (f) => window.api.openPath(f) })); log.scrollTop = log.scrollHeight; }
     const secs = (Date.now() - t0) / 1000;
     const ok = (!failed && !stopped && !asked) || offlineOk;
     window.api.timing('log', { text: task, route: 'old', mode: speedMode, ok: !!ok, stopped, asked, failed, fails, modelCalls, steps: ran.length + webSteps, totalMs: Math.round(Date.now() - t0), stages: TM }).catch(() => {});
-    if (!asked && !stopped && !failed) { const n = ran.length + webSteps; print('done', DEV ? `${n} step${n === 1 ? '' : 's'} · ${secs.toFixed(1)}s` : `done in ${secs.toFixed(1)}s`, 'done'); }
     // Remember only clean runs: every command exit 0, nothing refused, no question left open.
     if (ok && !offlineOk && allOk && ran.length && !ran.some(serious)) await window.api.db('remember', task, ran, lastSay);
     if (!asked) {
@@ -1252,6 +1273,7 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
   const SLASH = [
     { cmd: 'agent', title: 'Agent', desc: 'Open AI agent windows. Add a number to open several: /agent 5 task', ic: SL('<rect width="18" height="18" x="3" y="3" rx="4"/><path d="M8 12h8M12 8v8"/>') },
     { cmd: 'browser', title: 'Browser', desc: 'An agent that works on the web: searches, reads and opens sites', ic: SL('<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/>') },
+    { cmd: 'search', title: 'Search', desc: 'Find a file, folder or app on this PC: /search invoice pdf', ic: SL('<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>') },
     { cmd: 'script', title: 'Script writer', desc: 'Write, save and test a script or program', ic: SL('<path d="m18 16 4-4-4-4M6 8l-4 4 4 4M14.5 4l-5 16"/>') },
   ];
   const slashEl = $('slash');
@@ -1265,7 +1287,211 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
     input.focus();
     input.dispatchEvent(new Event('input'));
   };
+
+  // ---- /search: the whole-PC tree, live while typing (Raycast-style). Double-click opens, right-click / Ctrl+K = actions.
+  const FILTERS = ['all', 'folders', 'documents', 'images', 'media', 'apps'];
+  const IC = {
+    dir: SL('<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>'),
+    file: SL('<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>'),
+    app: SL('<rect width="16" height="16" x="4" y="4" rx="4"/><path d="M9 12h6"/>'),
+  };
+  let sFilter = 0, sHits = [], sSel = 0, sSeq = 0, sTimer = 0, sMenu = null, sLabel = '';
+  const searchQ = () => /^\/search\s([\s\S]*)$/i.exec(input.value)?.[1].trim() ?? null;
+  const recents = () => { try { return JSON.parse(localStorage.getItem('searchRecent')) || []; } catch { return []; } };
+  const remember = (h) => { try { localStorage.setItem('searchRecent', JSON.stringify([h, ...recents().filter((r) => r.path !== h.path)].slice(0, 8))); } catch {} };
+  // Type badge in the middle of a result row: "Folder", "App", "Video · MKV", "PDF", "Image · PNG"…
+  const GROUPS = {
+    Video: 'mp4 mkv avi mov wmv webm flv m4v mpg mpeg', Audio: 'mp3 flac wav m4a aac ogg wma opus', Image: 'jpg jpeg png gif webp heic svg bmp ico tif tiff',
+    Word: 'doc docx odt rtf', Excel: 'xls xlsx csv ods', PowerPoint: 'ppt pptx odp', Archive: 'zip rar 7z tar gz', Code: 'js mjs ts py java c cpp cs go rs php html css json bat ps1 sh',
+    Text: 'txt md log', Installer: 'msi',
+  };
+  const typeOf = (h) => {
+    if (h.dir) return 'Folder';
+    const ext = (/\.([a-z0-9]{1,6})$/i.exec(h.path)?.[1] || '').toLowerCase();
+    if (ext === 'exe' || ext === 'lnk' || ext === 'url') return 'App';
+    if (ext === 'pdf') return 'PDF';
+    const g = Object.keys(GROUPS).find((k) => GROUPS[k].split(' ').includes(ext));
+    return g ? `${g} · ${ext.toUpperCase()}` : ext ? ext.toUpperCase() : 'File';
+  };
+  const baseName = (p) => p.split('\\').filter(Boolean).pop() || p;
+  const searchDone = () => { input.value = ''; grow(); slashEl.hidden = true; slashGrow(); if (mode === 'runner') window.api.hideRunner(); };
+  const sOpen = async (h) => { const err = await window.api.openPath(h.path); if (err) return print('err', err, 'open'); remember(h); searchDone(); };
+  const sReveal = (h) => { window.api.reveal(h.path); remember(h); searchDone(); };
+  const sPaint = (empty = '') => {
+    closeMenu();
+    sSel = Math.min(sSel, Math.max(0, sHits.length - 1));
+    slashEl.className = 'slash sr';
+    slashEl.replaceChildren();
+    const h = document.createElement('div'); h.className = 'sl-h sr-h';
+    h.innerHTML = '<span></span><button type="button" class="sr-f" title="Filter (Ctrl+P)"></button>';
+    h.firstChild.textContent = sLabel;
+    h.lastChild.textContent = `${FILTERS[sFilter]} ▾`;
+    h.lastChild.onmousedown = (e) => { e.preventDefault(); sFilter = (sFilter + 1) % FILTERS.length; searchRun(true); };
+    if (sLabel === 'Recent' && sHits.length) { // forget what was opened from /search
+      const c = Object.assign(document.createElement('button'), { type: 'button', className: 'sr-f sr-clear', textContent: 'Clear', title: 'Clear recent searches' });
+      c.onmousedown = (e) => { e.preventDefault(); try { localStorage.removeItem('searchRecent'); } catch {} searchRun(true); };
+      h.lastChild.before(c);
+    }
+    slashEl.append(h);
+    sHits.forEach((it, i) => {
+      const r = document.createElement('div');
+      r.className = `sl-i${i === sSel ? ' on' : ''}`;
+      const app = /\.exe$/i.test(it.path) && !it.dir;
+      r.innerHTML = `<span class="sl-ic">${it.dir ? IC.dir : app ? IC.app : IC.file}</span><span class="sl-t"><b></b><span></span></span>`;
+      r.querySelector('b').textContent = baseName(it.path);
+      r.querySelector('.sl-t span').textContent = it.path.slice(0, -baseName(it.path).length).replace(/\\$/, '');
+      r.title = it.path;
+      const badge = document.createElement('span'); badge.className = 'sr-type'; badge.textContent = typeOf(it); r.append(badge);
+      // the real Windows icon (app logo, file type, folder); the outline icon stays if it can't be read
+      const ic = r.querySelector('.sl-ic');
+      window.api.fileIcon(it.path).then((url) => { if (url) { const img = new Image(); img.src = url; img.alt = ''; ic.replaceChildren(img); ic.classList.add('img'); } }).catch(() => {});
+      r.onmousedown = (e) => { e.preventDefault(); if (e.button === 0) { sSel = i; markSel(); } };
+      r.ondblclick = () => sOpen(it);
+      r.oncontextmenu = (e) => { e.preventDefault(); sSel = i; markSel(); openMenu(e.clientX, e.clientY); };
+      // Quick actions on the row (same as the right-click menu): location, copy, and ⋯ for everything else.
+      const btns = document.createElement('span'); btns.className = 'sr-btns';
+      [
+        ['Open file location (Ctrl+Enter)', SL('<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M12 11v5M9.5 13.5 12 16l2.5-2.5"/>'), () => sReveal(it)],
+        ['Copy (Ctrl+C)', SL('<rect width="12" height="12" x="8" y="8" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>'), () => sClip(it, false)],
+        ['More actions (Ctrl+K)', SL('<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>'), (b) => { const rc = b.getBoundingClientRect(); openMenu(rc.right - 230, rc.bottom + 4); }],
+      ].forEach(([tip, svg, fn]) => {
+        const b = document.createElement('button');
+        b.type = 'button'; b.className = 'sr-b'; b.title = tip; b.setAttribute('aria-label', tip); b.innerHTML = svg;
+        b.onmousedown = (e) => { e.preventDefault(); e.stopPropagation(); sSel = i; markSel(); fn(b); };
+        b.ondblclick = (e) => e.stopPropagation();
+        btns.append(b);
+      });
+      r.append(btns);
+      slashEl.append(r);
+    });
+    if (!sHits.length) { const n = document.createElement('div'); n.className = 'sr-none'; n.textContent = empty; slashEl.append(n); }
+    const k = document.createElement('div'); k.className = 'sr-k';
+    k.innerHTML = '<span><kbd>↵</kbd> open</span><span><kbd>Ctrl ↵</kbd> location</span><span><kbd>Ctrl K</kbd> actions</span><span><kbd>Ctrl P</kbd> filter</span>';
+    slashEl.append(k);
+    slashEl.hidden = false;
+    slashGrow();
+  };
+  const markSel = () => [...slashEl.querySelectorAll('.sl-i')].forEach((n, k) => n.classList.toggle('on', k === sSel));
+  // AI only when plain matching found nothing for a described file ("the pdf about my car insurance"): ~1-2 s, labelled.
+  const aiSearch = async (q, seq) => {
+    sLabel = 'No direct match · asking AI…'; sHits = []; sPaint('');
+    try {
+      const raw = await window.api.ai([
+        { role: 'system', content: 'The user describes a file, folder or app on their Windows PC. Turn it into a file-name search. Reply with ONLY JSON: {"words":"1-3 words likely in its file or folder name","filter":"all|folders|documents|images|media|apps"}' },
+        { role: 'user', content: q },
+      ], false, { fast: true, maxTokens: 80, timeoutMs: 4000 });
+      const j = JSON.parse(String(raw).match(/\{[\s\S]*\}/)?.[0] || '{}');
+      const words = String(j.words || '').trim();
+      if (seq !== sSeq) return;
+      if (!words) { sLabel = 'Results'; return sPaint(`Nothing found for “${q}”`); }
+      sHits = await window.api.search(words, FILTERS.includes(j.filter) ? j.filter : FILTERS[sFilter]);
+      if (seq !== sSeq) return;
+      sLabel = `AI searched “${words}”`; sSel = 0; sPaint(`Nothing found for “${q}”`);
+    } catch { if (seq === sSeq) { sLabel = 'Results'; sPaint(`Nothing found for “${q}”`); } }
+  };
+  const searchRun = (now) => {
+    clearTimeout(sTimer);
+    const q = searchQ();
+    const seq = ++sSeq;
+    if (!q) { sHits = recents(); sSel = 0; sLabel = sHits.length ? 'Recent' : 'Search this PC'; return sPaint('Type a file, folder or app name. Add pdf, mp4… to narrow it.'); }
+    sTimer = setTimeout(async () => {
+      const hits = await window.api.search(q, FILTERS[sFilter]).catch(() => []);
+      if (seq !== sSeq) return; // typed on: a newer search owns the list
+      if (!hits.length && q.split(/\s+/).length >= 3) return aiSearch(q, seq);
+      sHits = hits; sSel = 0; sLabel = 'Results'; sPaint(`Nothing found for “${q}”`);
+    }, now ? 0 : 80);
+  };
+  // Actions menu: most used first, Delete last in red behind a separator; Esc / click outside closes.
+  const sAct = (h) => [
+    ['Open', 'Enter', () => sOpen(h)],
+    ['Open file location', 'Ctrl+Enter', () => sReveal(h)],
+    ['Copy', 'Ctrl+C', () => sClip(h, false)],
+    ['Cut', 'Ctrl+X', () => sClip(h, true)],
+    ['Copy path', 'Ctrl+Shift+C', () => { navigator.clipboard.writeText(h.path); flash('Path copied'); }],
+    ['Rename', 'F2', () => sRename(h)],
+    ...(sLabel === 'Recent' ? [['Remove from recent', '', () => { try { localStorage.setItem('searchRecent', JSON.stringify(recents().filter((r) => r.path !== h.path))); } catch {} searchRun(true); }]] : []),
+    null,
+    ['Delete', 'Del', () => sDelete(h), true],
+  ];
+  let mSel = 0, delArmed = false;
+  function closeMenu() { sMenu?.remove(); sMenu = null; delArmed = false; }
+  function openMenu(x, y) {
+    const h = sHits[sSel]; if (!h) return;
+    closeMenu(); mSel = 0;
+    sMenu = document.createElement('div'); sMenu.className = 'sr-menu';
+    sAct(h).forEach((a) => {
+      if (!a) { sMenu.append(document.createElement('hr')); return; }
+      const r = document.createElement('div'); r.className = `sr-mi${a[3] ? ' bad' : ''}`;
+      r.innerHTML = '<span></span><kbd></kbd>';
+      r.firstChild.textContent = a[0]; r.lastChild.textContent = a[1];
+      r.onmousedown = (e) => { e.preventDefault(); runItem(a, r); };
+      sMenu.append(r);
+    });
+    document.body.append(sMenu);
+    if (x == null) { const row = slashEl.querySelectorAll('.sl-i')[sSel]?.getBoundingClientRect(); x = (row?.left || 0) + 40; y = row?.bottom || 0; }
+    const b = sMenu.getBoundingClientRect();
+    sMenu.style.left = `${Math.max(4, Math.min(x, innerWidth - b.width - 4))}px`;
+    sMenu.style.top = `${Math.max(4, Math.min(y, innerHeight - b.height - 4))}px`;
+    menuMark();
+  }
+  const menuItems = () => [...(sMenu?.querySelectorAll('.sr-mi') || [])];
+  const menuMark = () => menuItems().forEach((n, k) => n.classList.toggle('on', k === mSel));
+  function runItem(a, row) {
+    if (a[0] === 'Delete' && !delArmed) { delArmed = true; row.firstChild.textContent = 'Move to Recycle Bin? Click again'; return; }
+    closeMenu(); a[2]();
+  }
+  const flash = (msg) => { sLabel = msg; sPaint(''); setTimeout(() => { if (sLabel === msg) { sLabel = 'Results'; if (!slashEl.hidden && slashEl.classList.contains('sr')) sPaint(''); } }, 1400); };
+  const sClip = async (h, cut) => { try { await window.api.fileClip(h.path, cut); flash(cut ? 'Cut · paste it in any folder' : 'Copied · paste it in any folder'); } catch (e) { print('err', e.message, 'copy'); } };
+  const sDelete = async (h) => {
+    try { await window.api.fileTrash(h.path); sHits = sHits.filter((x) => x !== h); flash(`${baseName(h.path)} moved to the Recycle Bin`); } catch (e) { print('err', e.message, 'delete'); }
+  };
+  const sRename = (h) => {
+    const b = slashEl.querySelectorAll('.sl-i')[sHits.indexOf(h)]?.querySelector('b'); if (!b) return;
+    const old = baseName(h.path);
+    const box = document.createElement('input'); box.className = 'sr-ren'; box.value = old; box.spellcheck = false;
+    b.replaceWith(box); box.focus();
+    box.setSelectionRange(0, h.dir || old.lastIndexOf('.') < 1 ? old.length : old.lastIndexOf('.'));
+    let done = false;
+    const fin = async (save) => {
+      if (done) return; done = true;
+      if (save && box.value.trim() && box.value.trim() !== old) {
+        try { h.path = await window.api.fileRename(h.path, box.value); } catch (e) { print('err', e.message, 'rename'); }
+      }
+      input.focus(); sPaint('');
+    };
+    box.onkeydown = (e) => { e.stopPropagation(); if (e.key === 'Enter') { e.preventDefault(); fin(true); } else if (e.key === 'Escape') { e.preventDefault(); fin(false); } };
+    box.onblur = () => fin(true);
+  };
+  document.addEventListener('mousedown', (e) => { if (sMenu && !sMenu.contains(e.target)) closeMenu(); });
+  // Keys while the results list is showing. Returns true when it handled the key.
+  const searchKey = (e) => {
+    const h = sHits[sSel], ctrl = e.ctrlKey || e.metaKey, k = e.key;
+    if (sMenu) {
+      const items = menuItems(), acts = sAct(h).filter(Boolean);
+      if (k === 'ArrowDown' || k === 'ArrowUp') { mSel = (mSel + (k === 'ArrowDown' ? 1 : items.length - 1)) % items.length; menuMark(); }
+      else if (k === 'Enter') runItem(acts[mSel], items[mSel]);
+      else if (k === 'Escape' || (ctrl && k.toLowerCase() === 'k')) closeMenu();
+      else return true; // swallow typing while the menu is open
+      return true;
+    }
+    const noSel = input.selectionStart === input.selectionEnd;
+    if (ctrl && k.toLowerCase() === 'p') { sFilter = (sFilter + 1) % FILTERS.length; searchRun(true); return true; }
+    if (k === 'Escape') { slashEl.hidden = true; slashGrow(); return true; }
+    if (!h) return k === 'Enter';
+    if (k === 'ArrowDown' || k === 'ArrowUp') { sSel = (sSel + (k === 'ArrowDown' ? 1 : sHits.length - 1)) % sHits.length; markSel(); return true; }
+    if (k === 'Enter' && ctrl) { sReveal(h); return true; }
+    if (k === 'Enter' && !e.shiftKey) { sOpen(h); return true; }
+    if (ctrl && k.toLowerCase() === 'k') { openMenu(); return true; }
+    if (ctrl && e.shiftKey && k.toLowerCase() === 'c') { navigator.clipboard.writeText(h.path); flash('Path copied'); return true; }
+    if (ctrl && noSel && (k.toLowerCase() === 'c' || k.toLowerCase() === 'x')) { sClip(h, k.toLowerCase() === 'x'); return true; }
+    if (k === 'F2') { sRename(h); return true; }
+    if (k === 'Delete' && noSel && input.selectionEnd === input.value.length) { openMenu(); mSel = menuItems().length - 1; menuMark(); return true; }
+    return false;
+  };
+
   const slashRender = () => {
+    if (searchQ() !== null) return searchRun();
+    clearTimeout(sTimer); sSeq++; closeMenu();
     const items = slashList();
     if (items.length) {
       slashSel = Math.min(slashSel, items.length - 1);
@@ -1293,9 +1519,13 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
     slashGrow();
   };
   input.addEventListener('input', slashRender);
-  input.addEventListener('blur', () => setTimeout(() => { slashEl.hidden = true; slashGrow(); }, 120));
+  input.addEventListener('blur', () => setTimeout(() => {
+    if (slashEl.contains(document.activeElement) || sMenu) return; // renaming a search result / its menu is open
+    slashEl.hidden = true; slashGrow();
+  }, 120));
   input.addEventListener('keydown', (e) => { // capture: runs before the Enter/Esc handlers
     if (!slashOpen()) return;
+    if (slashEl.classList.contains('sr')) { if (searchKey(e)) { e.preventDefault(); e.stopImmediatePropagation(); } return; }
     const items = slashList();
     const digit = /^[1-9]$/.test(e.key) && input.value === '/' ? SLASH[+e.key - 1] : null;
     if (digit) { e.preventDefault(); e.stopImmediatePropagation(); slashPick(digit); }
@@ -1309,6 +1539,15 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
     e.preventDefault();
     const task = input.value.trim();
     if (!task || running) return;
+    // "/search q" sent with the list closed: open the best hit
+    const sq = /^\/search\s+([\s\S]+)$/i.exec(task);
+    if (sq) {
+      (async () => {
+        const h = sHits[sSel] || (await window.api.search(sq[1].trim(), FILTERS[sFilter]).catch(() => []))[0];
+        if (h) sOpen(h); else print('dim', `Nothing found for “${sq[1].trim()}”`, '');
+      })();
+      return;
+    }
     input.value = ''; grow(); slashEl.hidden = true;
     // "/agent [N] [task]", "/browser [N] [task]", "/script [task]"
     const slash = task.match(/^\/(agent|browser|script)s?(?=\s|\d|$)\s*([\s\S]*)$/i);

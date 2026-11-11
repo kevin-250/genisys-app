@@ -252,6 +252,7 @@ async function settingsTab(root) {
 }
 
 async function keysTab(root) {
+  await ownAISection(root);
   const head = el('p', 'muted', 'Keys are tried top to bottom. When one hits its free daily limit it rests until 00:00 UTC and the next one takes over. Keys stay on this PC in config.json; only a masked form is shown here.');
   const list = el('div', 'items');
   root.append(section('openrouter keys', head, list));
@@ -316,6 +317,89 @@ async function keysTab(root) {
     try { await window.api.pkeys('add', sel.value, pinp.value); render('keys'); } catch (err) { pmsg.textContent = err.message.replace(/^Error invoking remote method 'pkeys': (Error: )?/, ''); }
   };
   root.append(section('fast providers (optional)', el('p', 'muted', 'Used first when Fast mode is on (5 s per call, then the next one, then OpenRouter). Free keys: console.groq.com and cloud.cerebras.ai.'), pl, padd, pmsg));
+}
+
+// "Your own AI": the user's key for Claude, OpenAI, Gemini… and the model to use. Used first for every task;
+// the free models take over if it fails. Keys stay in config.json on this PC; the page only sees a masked form.
+async function ownAISection(root) {
+  const errText = (e) => String(e?.message || e).replace(/^Error invoking remote method '\w+': (Error: )?/, '');
+  const st = await window.api.ownAI('state');
+  const box = el('div', 'own');
+  const now = el('div', 'own-now');
+  const nowName = (a) => { const p = st.providers.find((x) => x.id === a?.provider); return a && p ? `${p.name} · ${a.model}` : 'Free models (Groq / OpenRouter)'; };
+  now.innerHTML = '<span class="own-dot"></span><span class="own-l">Now using</span><b></b>';
+  now.querySelector('b').textContent = nowName(st.active);
+  now.classList.toggle('mine', !!st.active);
+  if (st.active) now.append(btn('Use free models', async () => { await window.api.ownAI('use', {}); render('keys'); }, 'btn'));
+
+  const form = el('form', 'own-f');
+  const prov = el('select', 'field');
+  for (const p of st.providers) prov.append(Object.assign(el('option', '', `${p.name}${p.masked ? '  ✓' : ''}`), { value: p.id }));
+  prov.value = st.active?.provider || st.providers.find((p) => p.masked)?.id || 'anthropic';
+  const keyRow = el('div', 'own-row');
+  const key = Object.assign(el('input', 'field'), { type: 'password', autocomplete: 'off', spellcheck: false });
+  const url = Object.assign(el('input', 'field'), { placeholder: 'service URL, e.g. http://localhost:11434/v1', spellcheck: false });
+  const saveKey = btn('Save key', null, 'btn primary');
+  const delKey = btn('Remove key', null, 'btn x');
+  const getKey = el('a', 'own-get');
+  keyRow.append(key, saveKey, delKey);
+  const modelRow = el('div', 'own-row');
+  const model = Object.assign(el('input', 'field'), { placeholder: 'model', spellcheck: false });
+  const dl = el('datalist'); dl.id = 'own-models'; model.setAttribute('list', 'own-models');
+  const test = btn('Test', null, 'btn');
+  const use = btn('Use this model', null, 'btn primary');
+  modelRow.append(model, dl, test, use);
+  const msg = el('div', 'own-msg');
+  const lbl = (t) => el('label', 'own-lbl', t);
+  form.append(lbl('Provider'), prov, lbl('API key'), url, keyRow, getKey, lbl('Model'), modelRow, msg);
+  const say = (t, ok) => { msg.textContent = t; msg.className = `own-msg${ok === true ? ' ok' : ok === false ? ' bad' : ''}`; };
+
+  const fill = async () => {
+    const p = st.providers.find((x) => x.id === prov.value);
+    key.value = ''; key.placeholder = p.masked ? `saved: ${p.masked} (paste a new one to replace it)` : `paste your ${p.name} API key`;
+    url.hidden = !p.custom; url.value = p.url || '';
+    delKey.hidden = !p.masked;
+    getKey.hidden = !p.keyUrl; getKey.textContent = p.keyUrl ? `Get a ${p.name} key ↗` : ''; getKey.href = '#';
+    getKey.onclick = (e) => { e.preventDefault(); window.api.openPath(p.keyUrl); };
+    model.value = st.active?.provider === p.id ? st.active.model : (p.models[0] || '');
+    test.disabled = use.disabled = !p.masked;
+    dl.replaceChildren(...p.models.map((m) => Object.assign(el('option'), { value: m })));
+    say(p.masked ? 'Loading the models this key can use…' : 'Save a key to pick a model.');
+    if (!p.masked) return;
+    const list = await window.api.ownAI('models', { provider: p.id }).catch(() => p.models);
+    if (prov.value !== p.id) return;
+    dl.replaceChildren(...list.map((m) => Object.assign(el('option'), { value: m })));
+    if (!model.value && list[0]) model.value = list[0];
+    say(`${list.length} models available. Pick one or type its name, then Test.`);
+  };
+  prov.onchange = fill;
+  form.onsubmit = async (e) => { // Enter in the key box = save it
+    e.preventDefault();
+    if (!key.value.trim()) return;
+    try {
+      await window.api.ownAI('setKey', { provider: prov.value, key: key.value, url: url.value });
+      const p = st.providers.find((x) => x.id === prov.value);
+      p.masked = `${key.value.trim().slice(0, 9)}…${key.value.trim().slice(-4)}`; p.url = url.value;
+      prov.selectedOptions[0].textContent = `${p.name}  ✓`;
+      await fill(); say('Key saved. Pick a model and press Test.', true);
+    } catch (err) { say(errText(err), false); }
+  };
+  saveKey.type = 'submit';
+  delKey.onclick = async () => { if (confirm('Remove this key from this PC?')) { await window.api.ownAI('removeKey', { provider: prov.value }); render('keys'); } };
+  test.onclick = async () => {
+    if (!model.value.trim()) return say('Pick a model first.', false);
+    test.disabled = true; say('Testing…');
+    const r = await window.api.ownAI('test', { provider: prov.value, model: model.value.trim() }).catch((err) => ({ ok: false, error: errText(err) }));
+    test.disabled = false;
+    say(r.ok ? `Works: answered in ${(r.ms / 1000).toFixed(1)}s.` : `Didn't work: ${r.error}`, r.ok);
+  };
+  use.onclick = async () => {
+    if (!model.value.trim()) return say('Pick a model first.', false);
+    try { await window.api.ownAI('use', { provider: prov.value, model: model.value.trim() }); render('keys'); } catch (err) { say(errText(err), false); }
+  };
+  box.append(now, el('p', 'muted', 'Use your own key for Claude, OpenAI, Gemini and more. Genisys uses that model first for every task; if it fails, the free models take over. Keys stay on this PC.'), form);
+  root.append(section('your own AI', box));
+  await fill();
 }
 
 // Free-model picker under the model list: biggest free models first, "add" appends to the list.
