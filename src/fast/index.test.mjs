@@ -100,10 +100,11 @@ test('scan: maxDepth limits how deep folders are read', async () => {
   await ix.scan(['C:\\U\\Documents'], fsp, { pause: nopause, maxDepth: 0 });
   assert.deepEqual(fsp.reads, ['C:\\U\\Documents']); // Taxes is listed but not opened
 });
-test('lookup: a past deadline stops the typo passes; exact matches still come back', async () => {
+test('lookup: even past the deadline, exact matches and the narrowed typo list still come back', async () => {
   const ix = new PathIndex();
   await ix.scan(['C:\\U\\Videos'], fakeFs(TREE), { pause: nopause });
-  assert.deepEqual(ix.lookup('freegut', { deadline: 0 }), []);
+  assert.match(ix.lookup('freegut', { deadline: 0 })[0]?.path || '', /Free\.Guy/);
+  assert.match(ix.lookup('mousetrp', { deadline: 0 })[0]?.path || '', /Mousetrap/i); // a typo
   assert.match(ix.lookup('free guy', { deadline: 0 })[0].path, /Free\.Guy/);
   ix.setApps([{ name: 'Google Chrome', path: 'C:\\Chrome\\chrome.exe' }]);
   assert.equal(ix.lookup('chrome', { sections: ['installed_apps'] })[0].path, 'C:\\Chrome\\chrome.exe');

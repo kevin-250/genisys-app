@@ -5,3 +5,16 @@ assert.ok(fuzzy('freegut', 'Free.Guy.(NKIRI.COM)2021.Downloaded.from.NKIRI.COM.m
 assert.strictEqual(fuzzy('curriculum vitae fiston', 'CURRICULUM VITAE Fiston.pdf'), 1);
 assert.ok(fuzzy('freegut', 'Wreck-It Ralph (2012).mp4') < 0.6);
 console.log('fuzzy: ok');
+import { editDist, typoMatcher } from './fuzzy.js';
+const sq = (n) => n.toLowerCase().replace(/[^a-z0-9]/g, '');
+const tm = (q, n) => typoMatcher(q.split(' '))(sq(n), n);
+assert.strictEqual(editDist('recieve', 'receive'), 1); // swapped letters = one typo
+assert.strictEqual(editDist('resme', 'resume'), 1);
+assert.ok(editDist('abc', 'xyz', 1) > 1);
+assert.ok(tm('resme', 'Resume 2026.pdf') >= 0.6);
+assert.ok(tm('recieve', 'how to receive money.txt') >= 0.6);
+assert.ok(tm('pakage json', 'package.json') >= 0.6);
+assert.ok(tm('chrme', 'Google Chrome') >= 0.6);
+assert.ok(tm('freegut', 'Free.Guy.(NKIRI.COM)2021.mkv') >= 0.6);
+assert.strictEqual(tm('resme', 'Spotify.exe'), 0);
+assert.strictEqual(tm('invoice', 'notes.txt'), 0);

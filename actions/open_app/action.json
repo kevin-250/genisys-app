@@ -1,6 +1,6 @@
 {
   "name": "open_app",
-  "description": "Open an installed program by name (chrome, spotify, calculator, notepad).",
+  "description": "Open an installed program by name (chrome, spotify, calculator, notepad). url: the website to open instead when the app is not installed.",
   "triggers": [
     "open",
     "launch",
@@ -11,6 +11,10 @@
     "name": {
       "type": "string",
       "required": true
+    },
+    "url": {
+      "type": "url",
+      "required": false
     }
   },
   "destructive": false,

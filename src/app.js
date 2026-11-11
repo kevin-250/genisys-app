@@ -3,6 +3,7 @@ import { isRisky } from './risky.js';
 import { fixCmd } from './memory.js';
 import { createEditor } from './editor.js';
 import { codeBlock, splitFences } from './codeblock.js';
+import { autoEnhanceSelects } from './select.js';
 import { confirmItem, fileTree, addCitations, sourceChips, changesCard, lineDiff, parseEnv, envCard } from './agentui.js';
 import { initTabs, render, panelOpen } from './tabs.js';
 import { spin } from './globe.js';
@@ -18,6 +19,7 @@ import { buildRouterMessages, validateRouterReply } from './fast/router.js';
 import { fitFast, byNumbers, dropFolderMap } from './fast/fit.js';
 import { buildScriptMessages, extractScript } from './fast/scriptFallback.js';
 applyAccent();
+autoEnhanceSelects(); // every <select> / <input list> gets the app's own themed dropdown
 
 
 // Serious commands (deleting, system/registry/network changes, killing things) are never replayed from memory: the AI re-checks them every time.
@@ -394,6 +396,8 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
         const phase = think ? 'thinking' : 'working';
         el.dataset.phase = phase;
         el.querySelector('.lphase em').textContent = phase;
+        // A "Thinking" step that ended at once with nothing in it is noise ("Thought 0.0s"): drop it.
+        if (cur?.think && Date.now() - cur.t0 < 400 && !cur.li.querySelector('.lout')) { cur.li.remove(); cur = null; }
         finish(cur);
         const li = document.createElement('li');
         li.className = 'leaf on';
@@ -799,9 +803,9 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
     };
     // true = this route finished the command (ran it, asked, or the user said no); false = try the next route.
     const handle = async (route, action, params) => {
-      print('cmd', describe(action, params), route);
       const r = await exec(action, params);
-      if (r.status === 'done') {
+      if (r.status === 'done') { // only shown when it really did something (a failed try falls through to the AI quietly)
+        print('cmd', describe(action, params), route);
         print('out', r.message, route);
         if (route !== 'cache') await store(r.resolved?.action || action, r.resolved?.params || params);
         await finish(route, action, true);
@@ -1329,6 +1333,7 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
   };
   const typeOf = (h) => {
     if (h.dir) return 'Folder';
+    if (h.app) return 'App';
     const ext = (/\.([a-z0-9]{1,6})$/i.exec(h.path)?.[1] || '').toLowerCase();
     if (ext === 'exe' || ext === 'lnk' || ext === 'url') return 'App';
     if (ext === 'pdf') return 'PDF';
@@ -1365,11 +1370,11 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
     sHits.forEach((it, i) => {
       const r = document.createElement('div');
       r.className = `sl-i${i === sSel ? ' on' : ''}`;
-      const app = /\.exe$/i.test(it.path) && !it.dir;
+      const app = it.app || (/\.exe$/i.test(it.path) && !it.dir);
       r.innerHTML = `<span class="sl-ic">${it.dir ? IC.dir : app ? IC.app : IC.file}</span><span class="sl-t"><b></b><span></span></span>`;
-      r.querySelector('b').textContent = baseName(it.path);
-      r.querySelector('.sl-t span').textContent = it.path.slice(0, -baseName(it.path).length).replace(/\\$/, '');
-      r.title = it.path;
+      r.querySelector('b').textContent = it.name || baseName(it.path); // Store apps come with their real name
+      r.querySelector('.sl-t span').textContent = it.app ? 'Microsoft Store app' : it.path.slice(0, -baseName(it.path).length).replace(/\\$/, '');
+      r.title = it.app ? it.name : it.path;
       const badge = document.createElement('span'); badge.className = 'sr-type'; badge.textContent = typeOf(it); r.append(badge);
       // the real Windows icon (app logo, file type, folder); the outline icon stays if it can't be read
       const ic = r.querySelector('.sl-ic');

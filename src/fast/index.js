@@ -2,13 +2,16 @@
 // (installed_apps, personal_files, media_library, system_files). Lookup is in-memory and takes a few ms.
 // Models only ever see the few relevant lines (contextFor), never the whole index.
 import { win32 as path } from 'node:path'; // the app is Windows-only; win32 keeps paths identical in tests on any OS
-import { fuzzy } from '../fuzzy.js';
+import { typoMatcher } from '../fuzzy.js';
 
 export const SKIP_DIRS = /^(node_modules|appdata|\.git|\.svn|\.hg|\$recycle\.bin|system volume information|__pycache__|cache|caches|temp|tmp|windows|program files|program files \(x86\)|programdata|venv|\.venv|dist|build|\.next|\.gradle|\.npm)$/i;
 const MEDIA = new Set(['mp4', 'mkv', 'avi', 'mov', 'wmv', 'webm', 'mp3', 'flac', 'wav', 'm4a', 'aac', 'ogg']);
 export const SECTIONS = ['installed_apps', 'personal_files', 'media_library', 'system_files'];
 const STOP = /^(the|in|of|a|an|file|folder|season|episode|ep|video|movie|please|my)$/;
 const EP_Q = /\b(?:episode|ep|e)\s*0*(\d{1,3})\b/i;
+// a-z0-9 letter pair at i -> 0..1295 (-1 for anything else)
+const cc = (c) => (c >= 97 && c <= 122 ? c - 97 : c >= 48 && c <= 57 ? c - 22 : -1);
+const pairCode = (s, i) => { const a = cc(s.charCodeAt(i)), b = cc(s.charCodeAt(i + 1)); return a < 0 || b < 0 ? -1 : a * 36 + b; };
 const squash = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '');
 
 export const skipDir = (name) => name.startsWith('.') || name.startsWith('$') || SKIP_DIRS.test(name);
@@ -72,6 +75,37 @@ export class PathIndex {
     for (const s of SECTIONS) for (const e of sec[s]) { e.h = squash(e.p.slice(-(e.n.length + 60))); e.q = squash(e.n); }
     this.sec = sec;
     this.count = SECTIONS.reduce((n, s) => n + sec[s].length, 0);
+    this.pairs = null; // typo table, rebuilt on the next typo search
+  }
+
+  // Typo table: letter pair -> ids of every entry whose name has it. Built once per rebuild (on first use), so a typo
+  // search only scores names that share enough letter pairs with the query, instead of every file on the PC.
+  // Names are squashed to a-z0-9, so a pair is one of 36*36 slots: flat typed arrays (offsets + ids), no Map, no strings.
+  pairTable() {
+    if (this.pairs) return this.pairs;
+    const all = SECTIONS.flatMap((s) => this.sec[s]);
+    const N = 1296, count = new Uint32Array(N + 1), last = new Int32Array(N).fill(-1);
+    const each = (fn) => all.forEach((e, id) => {
+      const q = e.q || '';
+      for (let i = 0; i < q.length - 1; i++) { const b = pairCode(q, i); if (b >= 0 && last[b] !== id) { last[b] = id; fn(b, id); } }
+    });
+    each((b) => count[b + 1]++);
+    for (let b = 0; b < N; b++) count[b + 1] += count[b]; // count[b] = where pair b's ids start
+    const ids = new Uint32Array(count[N]), fill = count.slice(0, N);
+    last.fill(-1);
+    each((b, id) => { ids[fill[b]++] = id; });
+    return (this.pairs = { all, start: count, ids });
+  }
+  // Entries sharing at least 40% of the query's letter pairs (the same bar typoMatcher uses), most shared first.
+  typoCandidates(words, cap = 20000) {
+    const { all, start, ids } = this.pairTable();
+    const joined = words.join(''), qb = new Set();
+    for (let i = 0; i < joined.length - 1; i++) { const b = pairCode(joined, i); if (b >= 0) qb.add(b); }
+    const need = Math.max(1, Math.ceil(qb.size * 0.4));
+    const counts = new Uint8Array(all.length), out = [];
+    for (const b of qb) for (let i = start[b]; i < start[b + 1]; i++) if (++counts[ids[i]] === need) out.push(ids[i]);
+    if (out.length > cap) out.sort((x, y) => counts[y] - counts[x]).length = cap;
+    return out.map((id) => all[id]);
   }
 
   // my_paths.json: { "pins": [{ "name": "movies", "path": "D:\\Movies" }], "roots": ["D:\\Movies"] }
@@ -98,9 +132,18 @@ export class PathIndex {
       if (epRe && !epRe.test(e.n)) continue;
       if (words.every((w) => e.h.includes(w))) hits.push({ path: e.p, score: e.q.includes(words.join('')) || words.every((w) => e.q.includes(w)) ? 1 : 0.92, dir: e.t === 'dir' });
     }
-    if (!hits.length && !epRe) { // pass 2 (typos, only when pass 1 found nothing): letter-pair similarity on names
-      const qs = words.join(' ');
-      for (let i = 0; i < pool.length && (i % 2000 || Date.now() < deadline); i++) { const e = pool[i], sc = fuzzy(qs, e.n); if (sc >= 0.7) hits.push({ path: e.p, score: Math.round(sc * 100) / 100, dir: e.t === 'dir' }); }
+    if (hits.length < 3 && !epRe) { // pass 2 (typos: "resme", "recieve", "freegut"), when exact words found little
+      const score = typoMatcher(words);
+      const have = new Set(hits.map((h) => h.path));
+      const inPool = new Set(pool);
+      const cands = this.typoCandidates(words);
+      const until = Math.max(deadline, Date.now() + 150); // the narrowed list always gets a short turn, even after a slow pass 1
+      for (let i = 0; i < cands.length && (i % 2000 || Date.now() < until); i++) {
+        const e = cands[i];
+        if (!inPool.has(e) || have.has(e.p)) continue;
+        const sc = score(e.q, e.n);
+        if (sc >= 0.6) hits.push({ path: e.p, score: Math.round(sc * 100) / 100, dir: e.t === 'dir' });
+      }
     }
     if (!hits.length && words.length >= 2) { // pass 3: one extra word the name doesn't have ("monthly report october" -> MONTHLY_REPORT_2026-10)
       for (let i = 0; i < pool.length && (i % 2000 || Date.now() < deadline); i++) {

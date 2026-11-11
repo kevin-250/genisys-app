@@ -65,3 +65,14 @@ test('url keeps its letter case', () => { assert.equal(parseIntent('open https:/
 test('unknown names get a lower confidence than known apps', () => {
   assert.ok(parseIntent('open obsidian').confidence > parseIntent('open some random tool').confidence);
 });
+
+test('app-or-site names: the desktop app first, the website only when asked for or not installed', () => {
+  const a = parseIntent('open whatsapp');
+  assert.equal(a.action, 'open_app');
+  assert.deepEqual(a.params, { name: 'whatsapp', url: 'https://web.whatsapp.com' });
+  assert.equal(parseIntent('open whatsapp web').action, 'open_url');
+  const c = parseIntent('open whatsapp in chrome');
+  assert.equal(c.action, 'open_url');
+  assert.equal(c.params.browser, 'chrome');
+  assert.equal(parseIntent('open youtube').action, 'open_url'); // a site only
+});

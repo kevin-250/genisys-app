@@ -227,7 +227,6 @@ async function tryProviders(messages, think, rec, opts) {
     provTurn.set(p.id, start + 1);
   }
   if (!lanes.length) return null;
-  let timeouts = 0;
   const one = async ({ p, key, n, model }) => {
     const at = Date.now();
     const note = (r) => rec.attempts.push({ provider: p.id, model, key: n, ms: Date.now() - at, r });
@@ -238,16 +237,30 @@ async function tryProviders(messages, think, rec, opts) {
       if (res.status === 429) provRest.set(`${p.id}:${keyId(key)}:${model}`, Date.now() + 1000 * Math.min(60, Math.max(5, Number(res.headers.get('retry-after')) || 20)));
       if ([401, 403].includes(res.status)) provRest.set(`${p.id}:${keyId(key)}`, Date.now() + 3600e3);
       note(res.ok ? 'empty' : `http ${res.status}`);
-    } catch (err) { if (err.name === 'TimeoutError') timeouts++; note(err.name === 'TimeoutError' ? 'timeout' : 'error'); }
+    } catch (err) { note(err.name === 'TimeoutError' ? 'timeout' : 'error'); }
     throw new Error('provider failed');
   };
   if (db.getSetting('raceProviders', false)) { // optional, default OFF: first provider to answer wins (costs more requests)
     const firsts = [...new Map(lanes.map((l) => [l.p.id, l])).values()];
     try { return await Promise.any(firsts.map(one)); } catch { return null; }
   }
-  // up to 6 tries (3 keys x 2 models); 2 timeouts mean the network or Groq is slow right now: go to the fallback instead
-  for (const lane of lanes.slice(0, 6)) { if (timeouts >= 2) break; try { return await one(lane); } catch {} }
-  return null;
+  // Hedged: start one key; if it hasn't answered in 2.5 s (a stuck key used to cost 10 s), the next starts alongside it,
+  // up to 3 at once. A failure starts the next at once. First answer wins; up to 6 tries (3 keys x 2 models).
+  return await new Promise((resolve) => {
+    const queue = lanes.slice(0, 6);
+    let running = 0, done = false, timer = 0;
+    const finish = (v) => { if (!done) { done = true; clearTimeout(timer); resolve(v); } };
+    const next = () => {
+      if (done) return;
+      if (!queue.length) { if (!running) finish(null); return; }
+      if (running >= 3) return;
+      running++;
+      one(queue.shift()).then(finish, () => { running--; next(); });
+      clearTimeout(timer);
+      timer = setTimeout(next, 2500);
+    };
+    next();
+  });
 }
 // ---- The user's own AI (Settings › Keys › "Your own AI"): their key, their model, used FIRST for every AI call.
 // If it fails (bad key, no credit, down) the free chain below takes over, so Genisys keeps working.
@@ -483,7 +496,7 @@ const aiHandler = async (e, messages, think, rec, opts = {}) => {
           headers: { Authorization: `Bearer ${k}`, 'Content-Type': 'application/json' },
           // No response_format: Nemotron Ultra doesn't support it; the renderer extracts the {...} from the reply instead.
           body: JSON.stringify({ model, messages, max_tokens: opts.maxTokens || (think ? 3000 : 1000), reasoning: { enabled: !!think } }),
-          signal: AbortSignal.timeout(opts.fast ? 8000 : think ? 30000 : 20000), // a busy free model fails fast; the next one is tried
+          signal: AbortSignal.timeout(opts.fast ? 8000 : think ? 30000 : 12000), // a busy free model fails fast; the next one is tried
         });
         data = await res.json().catch(() => ({}));
       } catch (err) { rec.attempts.push({ model, key: n, ms: Date.now() - at, r: err.name === 'TimeoutError' ? 'timeout' : 'error' }); lastErr = `${model}: ${err.name === 'TimeoutError' ? 'timed out' : err.message}`; transient = true; say('slow, switching model…'); continue; }
@@ -697,6 +710,7 @@ ipcMain.handle('run', async (e, cmd) => {
 const expandEnv = (p) => String(p || '').replace(/%([^%]+)%/g, (m, n) => process.env[n] || m);
 // Open a file/folder/URL with the default app; returns '' on success, else the error text.
 ipcMain.handle('openPath', async (_e, p) => {
+  if (isStoreTarget(p)) { launchTarget(p); return ''; } // a Store app from /search
   p = expandEnv(p);
   if (/^https?:\/\//i.test(p)) { await shell.openExternal(p); return ''; }
   return shell.openPath(p);
@@ -817,6 +831,7 @@ function resolveApp(name) {
       try { const t = shell.readShortcutLink(f).target; if (t && /\.exe$/i.test(t) && fs.existsSync(t)) cands.push({ p: t, s: base === want ? 3 : 2 }); } catch {}
     });
   }
+  if (!cands.length) { const s = storeApp(name); if (s) return s; } // Store app (WhatsApp, Netflix…): before the slow folder walk
   if (!cands.length) {
     const roots = [process.env.ProgramFiles, process.env['ProgramFiles(x86)'], path.join(process.env.LOCALAPPDATA || '', 'Programs'), process.env.LOCALAPPDATA].filter(Boolean);
     for (const r of roots) walk(r, 3, (f, n) => { if (/\.exe$/i.test(n) && !bad.test(n) && normName(n.replace(/\.exe$/i, '')).includes(want)) cands.push({ p: f, s: 1 }); });
@@ -824,13 +839,36 @@ function resolveApp(name) {
   cands.sort((a, b) => b.s - a.s || a.p.length - b.p.length);
   return cands[0]?.p || null;
 }
+// Microsoft Store apps (WhatsApp, Netflix, Spotify from the Store…) have no .exe shortcut, so the Start-menu scan misses
+// them. Windows' own Start-apps list has them; they start through shell:AppsFolder\<AppID>. Refreshed every 30 min.
+let storeApps = [];
+async function loadStoreApps() {
+  const r = await runPowerShell('Get-StartApps | Where-Object { $_.AppID -like "*!*" } | ForEach-Object { "$($_.Name)`t$($_.AppID)" }', 20000);
+  const list = r.out.split(/\r?\n/).map((l) => l.split('\t')).filter((a) => a.length === 2 && a[0].trim() && a[1].trim()).map(([n, id]) => ({ name: n.trim(), id: id.trim() }));
+  if (list.length) storeApps = list;
+  dlog('store apps:', storeApps.length);
+}
+function storeApp(name) {
+  const want = normName(name);
+  if (!want) return null;
+  const hit = storeApps.filter((a) => { const b = normName(a.name); return b === want || b.startsWith(want) || (want.length > 3 && b.includes(want)); })
+    .sort((a, b) => (normName(a.name) === want ? 0 : 1) - (normName(b.name) === want ? 0 : 1) || a.name.length - b.name.length)[0];
+  return hit ? `shell:AppsFolder\\${hit.id}` : null;
+}
+const isStoreTarget = (p) => /^shell:AppsFolder\\/i.test(String(p));
+// Start a program (or a Store app) without waiting for it.
+function launchTarget(target, args = []) {
+  const c = isStoreTarget(target)
+    ? spawn('explorer.exe', [target], { detached: true, stdio: 'ignore' })
+    : spawn(target, args, { detached: true, stdio: 'ignore', cwd: path.dirname(target) });
+  c.on('error', () => {});
+  c.unref();
+}
 ipcMain.handle('launchApp', (_e, name, file) => {
   const exe = resolveApp(name);
   if (!exe) return { ok: false };
   try {
-    const c = spawn(exe, file ? [expandEnv(file)] : [], { detached: true, stdio: 'ignore', cwd: path.dirname(exe) });
-    c.on('error', () => {});
-    c.unref();
+    launchTarget(exe, file ? [expandEnv(file)] : []);
     return { ok: true, exe };
   } catch (e) { return { ok: false, error: e.message }; }
 });
@@ -911,10 +949,11 @@ async function startPcIndex() {
   try {
     loadPcIndex();
     const t = Date.now();
-    pcIndex.setApps(scanApps());
+    pcIndex.setApps([...scanApps(), ...storeApps.map((a) => ({ name: a.name, path: `shell:AppsFolder\\${a.id}` }))]); // + Store apps
     await pcIndex.scan(drives(), fs.promises, { maxEntries: 600000, maxDepth: 12 });
     fs.writeFileSync(pcFile(), JSON.stringify(pcIndex.toJSON()));
     dlog('pc index ready:', pcIndex.count, 'entries in', Date.now() - t, 'ms');
+    setTimeout(() => { try { pcIndex.pairTable(); } catch {} }, 500); // typo table now, so no search waits for it
   } catch (e) { dlog('pc index failed', e?.message); } finally { pcBusy = false; }
 }
 // /search filters (Ctrl+P in the drop-up)
@@ -936,7 +975,7 @@ ipcMain.handle('search', (_e, q, filter = 'all', time = 'any') => {
   const since = SEARCH_TIMES[time]?.();
   const opts = { sections: ['installed_apps', 'personal_files', 'media_library'], deadline: t + 400, ...f };
   let hits;
-  if (!since) hits = ix.lookup(String(q || ''), { ...opts, limit: 8, exists: fs.existsSync });
+  if (!since) hits = ix.lookup(String(q || ''), { ...opts, limit: 8, exists: (x) => isStoreTarget(x) || fs.existsSync(x) });
   else {
     hits = [];
     for (const h of ix.lookup(String(q || ''), { ...opts, limit: 300 })) {
@@ -945,7 +984,8 @@ ipcMain.handle('search', (_e, q, filter = 'all', time = 'any') => {
     }
   }
   dlog('search', JSON.stringify(q), filter, time, hits.length, 'hits in', Date.now() - t, 'ms');
-  return hits.map((h) => ({ path: h.path, dir: !!h.dir }));
+  const storeName = (x) => storeApps.find((a) => `shell:AppsFolder\\${a.id}` === x)?.name;
+  return hits.map((h) => ({ path: h.path, dir: !!h.dir, ...(isStoreTarget(h.path) && { name: storeName(h.path) || 'App', app: true }) }));
 });
 // File actions from the /search results menu. Paths come from the renderer: only act on existing absolute paths.
 const realPath = (p) => { p = String(p || ''); if (!path.isAbsolute(p) || !fs.existsSync(p)) throw new Error('That item no longer exists.'); return path.resolve(p); };
@@ -1027,7 +1067,7 @@ function getFast() {
   const A = makeActions({
     shell: { openPath: (p) => shell.openPath(p), openExternal: (u) => shell.openExternal(u) },
     resolveApp: resolveAppFast,
-    spawnDetached: (exe, args) => { const c = spawn(exe, args, { detached: true, stdio: 'ignore', cwd: path.dirname(exe) }); c.on('error', () => {}); c.unref(); },
+    spawnDetached: (exe, args) => launchTarget(exe, args),
     findFiles: findSmart,
     paths,
     exists: (p) => fs.existsSync(p),
@@ -1434,6 +1474,7 @@ app.whenReady().then(() => {
   // Folder tree: saved by the installer; without it (portable zip, cut-short scan) build it right away.
   setTimeout(() => startIndex(), fs.existsSync(path.join(userDir(), 'path-index.json')) ? 15000 : 1500);
   loadPcIndex(); // saved whole-PC tree: /search works right away, the rescan below refreshes it
+  setTimeout(() => { try { if (pcIndex.scannedAt) pcIndex.pairTable(); } catch {} }, 3000);
   setTimeout(() => startPcIndex(), 20000);
   // Every 5 min pick up new/renamed files (cheap: unchanged folders are reused, only changed ones are read again).
   setInterval(() => { startIndex(true); startPcIndex(); }, 5 * 60e3);
@@ -1446,6 +1487,8 @@ app.whenReady().then(() => {
     try { await saveSpecs(); cloud.sendSpecs(); } catch (e) { dlog('specs failed', e?.message); }
   }, 20000);
   setTimeout(() => helper.warm(), 10000); // so the first volume / PC control is instant
+  setTimeout(() => loadStoreApps().catch(() => {}), 4000); // Store apps (WhatsApp…) so "open whatsapp" finds the desktop app
+  setInterval(() => loadStoreApps().catch(() => {}), 30 * 60e3);
   // Automatic updates: installs only while no Genisys window is open on screen (Settings › Automatic updates).
   updater = startUpdater({
     log: dlog,

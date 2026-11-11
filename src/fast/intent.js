@@ -31,7 +31,7 @@ export const APP_ALIASES = {
 };
 export const KNOWN_APPS = new Set(['chrome', 'edge', 'firefox', 'brave', 'opera', 'spotify', 'vlc', 'notepad', 'calculator', 'paint', 'word', 'excel',
   'powerpoint', 'outlook', 'teams', 'discord', 'whatsapp', 'telegram', 'zoom', 'code', 'steam', 'obsidian', 'cmd', 'powershell', 'terminal',
-  'settings', 'taskmgr', 'control', 'explorer', 'snipping tool', 'onenote', 'photoshop', 'slack', 'postman', 'notion', 'figma', 'obs', 'itunes']);
+  'settings', 'taskmgr', 'control', 'explorer', 'snipping tool', 'onenote', 'photoshop', 'slack', 'postman', 'notion', 'figma', 'obs', 'itunes', 'netflix', 'chatgpt']);
 
 const MEDIA_WORDS = /\b(movie|film|video|episode|season|series|song|music|track|album|mp3|mp4)\b/;
 const TYPE_WORDS = /\b(?:movie|film|video|file|document|doc|song|track)\b/g;
@@ -130,6 +130,10 @@ export function parseIntent(text) {
   // v.verb === 'open'
   const target = rest;
   if (URL_RE.test(target)) return out('open_url', withBrowser({ url: toUrl(rawToken(raw, target)) }, browser), 0.93 - typoPenalty, n, 'url');
+  // A name that is both an app and a site ("whatsapp", "netflix"): the installed desktop app first, the website only if it
+  // isn't installed. "whatsapp web" or "... in chrome" still means the website.
+  const both = APP_ALIASES[target] || target;
+  if (SITES[target] && KNOWN_APPS.has(both) && !browser) return out('open_app', { name: both, url: SITES[target] }, 0.95 - typoPenalty, n, 'app, else its website');
   if (SITES[target]) return out('open_url', withBrowser({ url: SITES[target] }, browser), 0.95 - typoPenalty, n, 'known site');
   const folderWord = target.replace(/\s*(?:folder|directory|dir)$/, '').trim();
   if (FOLDERS[folderWord]) return out('open_folder', { folder: FOLDERS[folderWord] }, 0.95 - typoPenalty, n, 'known folder');

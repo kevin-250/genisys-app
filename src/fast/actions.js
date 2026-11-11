@@ -76,9 +76,15 @@ export function makeActions(d) {
 
   const A = {
     pc: (p, confirmed) => d.system(p, confirmed), // built-in PC controls (src/fast/system.js)
-    async open_app({ name }) {
+    async open_app({ name, url }) {
       const key = String(name || '').toLowerCase().trim();
       if (!key) return fall('no app name');
+      if (url) { // app-or-site ("whatsapp"): the desktop app when installed, else its website
+        const exe = d.resolveApp(key);
+        if (exe) { d.spawnDetached(exe, []); return { status: 'done', message: `opened ${key}`, resolved: { action: 'open_app', params: { name: key, url } } }; }
+        const r = await viaBrowser(url);
+        return r.status === 'done' ? { ...r, message: `${key} isn't installed, opened ${url}`, resolved: { action: 'open_app', params: { name: key, url } } } : r;
+      }
       if (SYSTEM_URI[key]) { await d.shell.openExternal(SYSTEM_URI[key]); return { status: 'done', message: `opened ${key}` }; }
       if (SYSTEM[key] && !['word', 'excel', 'powerpoint'].includes(key)) {
         const err = await d.shell.openPath(SYSTEM[key]);
