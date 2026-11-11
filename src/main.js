@@ -927,12 +927,24 @@ const SEARCH_FILTERS = {
   apps: { sections: ['installed_apps'] },
 };
 // shortcut: lookup runs on the main process (a brief block, capped at ~400 ms); move it to a worker if the tree passes ~1M entries.
-ipcMain.handle('search', (_e, q, filter = 'all') => {
+// "Modified" filter (the index has no dates for most files, so the best name matches are checked on disk).
+const SEARCH_TIMES = { today: () => new Date().setHours(0, 0, 0, 0), week: () => Date.now() - 7 * 864e5, month: () => Date.now() - 30 * 864e5, year: () => Date.now() - 365 * 864e5 };
+ipcMain.handle('search', (_e, q, filter = 'all', time = 'any') => {
   const t = Date.now();
   const ix = pcIndex.scannedAt ? pcIndex : pindex; // not `ready`: that turns true with just the apps, mid first scan
   const f = SEARCH_FILTERS[filter] || {};
-  const hits = ix.lookup(String(q || ''), { sections: ['installed_apps', 'personal_files', 'media_library'], limit: 8, exists: fs.existsSync, deadline: t + 400, ...f });
-  dlog('search', JSON.stringify(q), filter, hits.length, 'hits in', Date.now() - t, 'ms');
+  const since = SEARCH_TIMES[time]?.();
+  const opts = { sections: ['installed_apps', 'personal_files', 'media_library'], deadline: t + 400, ...f };
+  let hits;
+  if (!since) hits = ix.lookup(String(q || ''), { ...opts, limit: 8, exists: fs.existsSync });
+  else {
+    hits = [];
+    for (const h of ix.lookup(String(q || ''), { ...opts, limit: 300 })) {
+      if (hits.length >= 8 || Date.now() - t > 700) break;
+      try { if (fs.statSync(h.path).mtimeMs >= since) hits.push(h); } catch {} // gone from disk: skipped
+    }
+  }
+  dlog('search', JSON.stringify(q), filter, time, hits.length, 'hits in', Date.now() - t, 'ms');
   return hits.map((h) => ({ path: h.path, dir: !!h.dir }));
 });
 // File actions from the /search results menu. Paths come from the renderer: only act on existing absolute paths.

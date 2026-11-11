@@ -710,6 +710,9 @@
       body.m-runner .slash { position: static; margin: 10px 12px 0; box-shadow: none; background: color-mix(in srgb, var(--text) 5%, transparent); }
       /* /search results + actions menu */
       .sr-h { display: flex; align-items: center; justify-content: space-between; }
+      .sr-h { gap: 6px; } .sr-h > span:first-child { flex: 1; min-width: 0; }
+      .sr-dd { text-transform: none; letter-spacing: 0; font-size: 11.5px; } .sr-dd.on { background: var(--accent-soft); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent); }
+      .sr-pick { min-width: 170px; }
       .sr-clear { margin-left: auto; margin-right: 6px; background: none !important; color: var(--muted) !important; } .sr-clear:hover { color: var(--red) !important; }
       .sr-f { padding: 3px 8px; border: 0; border-radius: 7px; background: color-mix(in srgb, var(--text) 8%, transparent); color: var(--text); font: 600 10.5px/1.2 var(--ui); letter-spacing: .6px; text-transform: uppercase; cursor: pointer; }
       .slash.sr .sl-i { padding: 6px 10px; } .slash.sr .sl-i .sl-ic { width: 28px; height: 28px; }

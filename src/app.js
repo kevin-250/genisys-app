@@ -1295,7 +1295,29 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
     file: SL('<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>'),
     app: SL('<rect width="16" height="16" x="4" y="4" rx="4"/><path d="M9 12h6"/>'),
   };
-  let sFilter = 0, sHits = [], sSel = 0, sSeq = 0, sTimer = 0, sMenu = null, sLabel = '';
+  const FILTER_NAMES = ['All types', 'Folders', 'Documents', 'Images', 'Media', 'Apps'];
+  const TIMES = [['any', 'Any time'], ['today', 'Today'], ['week', 'Past 7 days'], ['month', 'Past 30 days'], ['year', 'Past year']];
+  let sFilter = 0, sTime = 0, sHits = [], sSel = 0, sSeq = 0, sTimer = 0, sMenu = null, sLabel = '', sPick = null;
+  const search = (q, filter = FILTERS[sFilter]) => window.api.search(q, filter, TIMES[sTime][0]);
+  // In-page dropdown under a header button (a native <select> popup would take focus and close the Alt+Space bar).
+  const closePick = () => { sPick?.remove(); sPick = null; };
+  function openPick(btn, labels, cur, set) {
+    if (sPick) { const same = sPick.dataset.for === btn.title; closePick(); if (same) return; }
+    sPick = document.createElement('div');
+    sPick.className = 'sr-menu sr-pick'; sPick.dataset.for = btn.title; sPick.setAttribute('role', 'listbox');
+    labels.forEach((l, i) => {
+      const r = document.createElement('div');
+      r.className = `sr-mi${i === cur ? ' on' : ''}`; r.setAttribute('role', 'option'); r.setAttribute('aria-selected', i === cur);
+      r.innerHTML = '<span></span><kbd></kbd>'; r.firstChild.textContent = l; r.lastChild.textContent = i === cur ? '✓' : '';
+      r.onmousedown = (e) => { e.preventDefault(); e.stopPropagation(); closePick(); set(i); searchRun(true); };
+      sPick.append(r);
+    });
+    document.body.append(sPick);
+    const b = btn.getBoundingClientRect(), m = sPick.getBoundingClientRect();
+    sPick.style.left = `${Math.max(4, Math.min(b.right - m.width, innerWidth - m.width - 4))}px`;
+    sPick.style.top = `${b.bottom + 4 + m.height > innerHeight ? Math.max(4, b.top - m.height - 4) : b.bottom + 4}px`;
+  }
+  document.addEventListener('mousedown', (e) => { if (sPick && !sPick.contains(e.target)) closePick(); });
   const searchQ = () => /^\/search\s([\s\S]*)$/i.exec(input.value)?.[1].trim() ?? null;
   const recents = () => { try { return JSON.parse(localStorage.getItem('searchRecent')) || []; } catch { return []; } };
   const remember = (h) => { try { localStorage.setItem('searchRecent', JSON.stringify([h, ...recents().filter((r) => r.path !== h.path)].slice(0, 8))); } catch {} };
@@ -1318,20 +1340,27 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
   const sOpen = async (h) => { const err = await window.api.openPath(h.path); if (err) return print('err', err, 'open'); remember(h); searchDone(); };
   const sReveal = (h) => { window.api.reveal(h.path); remember(h); searchDone(); };
   const sPaint = (empty = '') => {
-    closeMenu();
+    closeMenu(); closePick();
     sSel = Math.min(sSel, Math.max(0, sHits.length - 1));
     slashEl.className = 'slash sr';
     slashEl.replaceChildren();
     const h = document.createElement('div'); h.className = 'sl-h sr-h';
-    h.innerHTML = '<span></span><button type="button" class="sr-f" title="Filter (Ctrl+P)"></button>';
+    h.innerHTML = '<span></span>';
     h.firstChild.textContent = sLabel;
-    h.lastChild.textContent = `${FILTERS[sFilter]} ▾`;
-    h.lastChild.onmousedown = (e) => { e.preventDefault(); sFilter = (sFilter + 1) % FILTERS.length; searchRun(true); };
     if (sLabel === 'Recent' && sHits.length) { // forget what was opened from /search
       const c = Object.assign(document.createElement('button'), { type: 'button', className: 'sr-f sr-clear', textContent: 'Clear', title: 'Clear recent searches' });
       c.onmousedown = (e) => { e.preventDefault(); try { localStorage.removeItem('searchRecent'); } catch {} searchRun(true); };
-      h.lastChild.before(c);
+      h.append(c);
     }
+    // Two dropdowns: what kind of item (Ctrl+P), and when it was last changed (Ctrl+M). Active ones are highlighted.
+    const dd = (labels, cur, title, set) => {
+      const b = Object.assign(document.createElement('button'), { type: 'button', className: `sr-f sr-dd${cur ? ' on' : ''}`, title, textContent: `${labels[cur]} ▾` });
+      b.setAttribute('aria-haspopup', 'listbox');
+      b.onmousedown = (e) => { e.preventDefault(); e.stopPropagation(); openPick(b, labels, cur, set); };
+      h.append(b);
+    };
+    dd(FILTER_NAMES, sFilter, 'Type (Ctrl+P)', (i) => { sFilter = i; });
+    dd(TIMES.map((x) => x[1]), sTime, 'Date modified (Ctrl+M)', (i) => { sTime = i; });
     slashEl.append(h);
     sHits.forEach((it, i) => {
       const r = document.createElement('div');
@@ -1366,7 +1395,7 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
     });
     if (!sHits.length) { const n = document.createElement('div'); n.className = 'sr-none'; n.textContent = empty; slashEl.append(n); }
     const k = document.createElement('div'); k.className = 'sr-k';
-    k.innerHTML = '<span><kbd>↵</kbd> open</span><span><kbd>Ctrl ↵</kbd> location</span><span><kbd>Ctrl K</kbd> actions</span><span><kbd>Ctrl P</kbd> filter</span>';
+    k.innerHTML = '<span><kbd>↵</kbd> open</span><span><kbd>Ctrl ↵</kbd> location</span><span><kbd>Ctrl K</kbd> actions</span><span><kbd>Ctrl P</kbd> type</span><span><kbd>Ctrl M</kbd> date</span>';
     slashEl.append(k);
     slashEl.hidden = false;
     slashGrow();
@@ -1384,7 +1413,7 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
       const words = String(j.words || '').trim();
       if (seq !== sSeq) return;
       if (!words) { sLabel = 'Results'; return sPaint(`Nothing found for “${q}”`); }
-      sHits = await window.api.search(words, FILTERS.includes(j.filter) ? j.filter : FILTERS[sFilter]);
+      sHits = await search(words, FILTERS.includes(j.filter) ? j.filter : FILTERS[sFilter]);
       if (seq !== sSeq) return;
       sLabel = `AI searched “${words}”`; sSel = 0; sPaint(`Nothing found for “${q}”`);
     } catch { if (seq === sSeq) { sLabel = 'Results'; sPaint(`Nothing found for “${q}”`); } }
@@ -1395,10 +1424,11 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
     const seq = ++sSeq;
     if (!q) { sHits = recents(); sSel = 0; sLabel = sHits.length ? 'Recent' : 'Search this PC'; return sPaint('Type a file, folder or app name. Add pdf, mp4… to narrow it.'); }
     sTimer = setTimeout(async () => {
-      const hits = await window.api.search(q, FILTERS[sFilter]).catch(() => []);
+      const hits = await search(q).catch(() => []);
       if (seq !== sSeq) return; // typed on: a newer search owns the list
       if (!hits.length && q.split(/\s+/).length >= 3) return aiSearch(q, seq);
-      sHits = hits; sSel = 0; sLabel = 'Results'; sPaint(`Nothing found for “${q}”`);
+      const narrowed = [sFilter ? FILTER_NAMES[sFilter].toLowerCase() : '', sTime ? `changed ${TIMES[sTime][1].toLowerCase()}` : ''].filter(Boolean).join(', ');
+      sHits = hits; sSel = 0; sLabel = 'Results'; sPaint(`Nothing found for “${q}”${narrowed ? ` (${narrowed}). Try “All types” / “Any time”.` : ''}`);
     }, now ? 0 : 80);
   };
   // Actions menu: most used first, Delete last in red behind a separator; Esc / click outside closes.
@@ -1476,6 +1506,8 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
     }
     const noSel = input.selectionStart === input.selectionEnd;
     if (ctrl && k.toLowerCase() === 'p') { sFilter = (sFilter + 1) % FILTERS.length; searchRun(true); return true; }
+    if (ctrl && k.toLowerCase() === 'm') { sTime = (sTime + 1) % TIMES.length; searchRun(true); return true; }
+    if (k === 'Escape' && sPick) { closePick(); return true; }
     if (k === 'Escape') { slashEl.hidden = true; slashGrow(); return true; }
     if (!h) return k === 'Enter';
     if (k === 'ArrowDown' || k === 'ArrowUp') { sSel = (sSel + (k === 'ArrowDown' ? 1 : sHits.length - 1)) % sHits.length; markSel(); return true; }
@@ -1543,7 +1575,7 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
     const sq = /^\/search\s+([\s\S]+)$/i.exec(task);
     if (sq) {
       (async () => {
-        const h = sHits[sSel] || (await window.api.search(sq[1].trim(), FILTERS[sFilter]).catch(() => []))[0];
+        const h = sHits[sSel] || (await search(sq[1].trim()).catch(() => []))[0];
         if (h) sOpen(h); else print('dim', `Nothing found for “${sq[1].trim()}”`, '');
       })();
       return;

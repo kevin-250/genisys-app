@@ -34,7 +34,7 @@ contextBridge.exposeInMainWorld('api', {
   ai: (messages, think, opts) => ipcRenderer.invoke('ai', messages, think, opts),
   openPath: (p) => ipcRenderer.invoke('openPath', p),
   find: (opts) => ipcRenderer.invoke('find', opts),
-  search: (q, filter) => ipcRenderer.invoke('search', q, filter), // /search: the whole-PC tree
+  search: (q, filter, time) => ipcRenderer.invoke('search', q, filter, time), // /search: the whole-PC tree
   reveal: (p) => ipcRenderer.send('reveal', p),
   fileIcon: (p) => ipcRenderer.invoke('fileIcon', p),
   fileClip: (p, cut) => ipcRenderer.invoke('fileClip', p, cut),
