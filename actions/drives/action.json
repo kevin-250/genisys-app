@@ -1,0 +1,7 @@
+{
+  "name": "drives",
+  "description": "Table of every drive (C:, D:, USB...) with used, free and total space. Read-only.",
+  "triggers": ["drive", "drives", "disk", "space", "free", "partition"],
+  "params": {},
+  "destructive": false, "needs_ai": false, "native": "drives"
+}

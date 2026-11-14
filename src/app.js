@@ -4,7 +4,7 @@ import { fixCmd } from './memory.js';
 import { createEditor } from './editor.js';
 import { codeBlock, splitFences } from './codeblock.js';
 import { autoEnhanceSelects } from './select.js';
-import { confirmItem, fileTree, addCitations, sourceChips, changesCard, lineDiff, parseEnv, envCard } from './agentui.js';
+import { confirmItem, questionCard, fileTree, addCitations, sourceChips, changesCard, lineDiff, parseEnv, envCard, dataTable, statCards, toolCard } from './agentui.js';
 import { initTabs, render, panelOpen } from './tabs.js';
 import { spin } from './globe.js';
 import { mountGlobe } from './cobeglobe.js';
@@ -15,7 +15,8 @@ import { cookbookHints } from './cookbook.js';
 import { parseIntent, FAST_MIN, splitTask, isFileTask } from './fast/intent.js';
 import { controlsHelp } from './fast/system.js';
 import { cacheLookup, cacheStore, cacheKey } from './fast/cache.js';
-import { buildRouterMessages, validateRouterReply } from './fast/router.js';
+import { buildRouterMessages, validateRouterReply, fileRules } from './fast/router.js';
+import { makeConvo, rowsFrom } from './convo.js';
 import { fitFast, byNumbers, dropFolderMap } from './fast/fit.js';
 import { buildScriptMessages, extractScript } from './fast/scriptFallback.js';
 applyAccent();
@@ -27,7 +28,7 @@ const serious = (c) => isRisky(c) || /\b(del|erase|rmdir|rd|format|diskpart|reg\
 
 const SYSTEM = `You are Genisys, an autonomous Windows executor and coder. The user's home is %USERPROFILE%.
 Each reply MUST be ONE JSON object and nothing else:
-{"say": "<one short sentence>", "ask": "<question for the user, or omit>", "options": ["<short answer>", ...] or omit, "decided": "<a choice you made yourself, or omit>", "plan": ["<step>", ...] or omit, "step": <current plan step number, or omit>, "file": {"path": "<path>", "content": "<full file text>"} or null, "code": {"lang": "<language, e.g. javascript>", "text": "<the complete code>"} or omit, "cmd": "<cmd.exe batch lines, or empty>", "find": {"name": "<words from the user, typos ok>", "in": "<folder or omit>", "kind": "file|dir|any", "ext": "<pdf, mkv... or omit>", "open": true|false, "with": "<app name to open it with, or omit>"} or omit, "app": {"name": "<app name>", "file": "<path or omit>"} or omit, "trash": ["<path>", ...] or omit, "restore": "<file name or path>" or omit, "web": {"search": "<query>"} or {"read": "<https url>"} or omit, "learn": {"kind": "interest|trait|fact", "text": "<short fact about the user>"} or omit, "improve": "<idea to improve this app or the user's setup, or omit>", "done": true|false}
+{"say": "<one short sentence>", "ask": "<question for the user, or omit>", "options": ["<short answer>", ...] or omit, "decided": "<a choice you made yourself, or omit>", "plan": ["<step>", ...] or omit, "step": <current plan step number, or omit>, "file": {"path": "<path>", "content": "<full file text>"} or null, "code": {"lang": "<language, e.g. javascript>", "text": "<the complete code>"} or omit, "table": {"title": "<what it is>", "columns": ["<col>", ...], "rows": [["<cell>", ...], ...]} or omit, "stats": [{"label": "<name>", "value": "<number/short value>", "note": "<optional>"}] or omit, "cmd": "<cmd.exe batch lines, or empty>", "find": {"name": "<words from the user, typos ok>", "in": "<folder or omit>", "kind": "file|dir|any", "ext": "<pdf, mkv... or omit>", "open": true|false, "with": "<app name to open it with, or omit>"} or omit, "app": {"name": "<app name>", "file": "<path or omit>"} or omit, "trash": ["<path>", ...] or omit, "restore": "<file name or path>" or omit, "web": {"search": "<query>"} or {"read": "<https url>"} or omit, "learn": {"kind": "interest|trait|fact", "text": "<short fact about the user>"} or omit, "improve": "<idea to improve this app or the user's setup, or omit>", "done": true|false}
 - "file" is written first (use it for a script or code that must be SAVED or RUN: .py, .js, .ps1, .bat, .html…; never write files with echo). Paths may use %USERPROFILE%; relative paths are under home.
 - "cmd" is then written to a .bat file and run; you receive the exit code and output next turn.
 - WEB SOURCES: after a web search, put the result's number in brackets after the sentence it supports, like "It costs $999 [2]." Only numbers you were given.
@@ -38,6 +39,7 @@ THINK before acting:
 - NATURAL DEFAULTS for a missing detail: the first one (season 1, part 1, page 1, the first result), the newest for "latest/last/recent", the default app or browser. Take it and say so in "decided". Ask only when the choices are really different and nothing in the request or the results points to one. "options" must be real items from your results (file names, paths): never invent them; if nothing was found, say so and try other words.
 - SHORT REPLIES ("yes", "no", "2", "ep1", "the second one", "work") answer YOUR last question: continue from the results you already have (use the paths from your last "find"), don't search again.
 - AMBIGUOUS TARGET: if the request doesn't say WHERE or WITH WHAT and the choice changes the result ("search this song", "play X", "open my mail", "look this up", "message John"), do NOT guess an app/site: ask first, with 2-4 clickable "options" (e.g. ["Spotify", "YouTube", "Browser search"]). Skip the question only when ABOUT THE USER or the request already tells you (they named the app, or you learned their usual choice). When they pick an option, add "learn" (kind "trait") with their preference so you never ask again.
+- "IT" / "THAT" / "THIS" / "THE FIRST ONE" / "AGAIN": read CONVERSATION SO FAR first. If it lists the file or folder, THAT is what the user means: act on its exact path now and never ask what it is (size of a file: PowerShell (Get-Item 'path').Length, of a folder: Get-ChildItem 'path' -Recurse -File | Measure-Object Length -Sum). Ask only when the conversation really does not say.
 - ASK only when it really matters (two very different meanings, data could be lost, missing info you can't guess). Give 2-4 "options" the user can click.
 - Be HONEST: if an idea is bad, dumb, pointless, harmful or impossible (would wipe data, break Windows, makes no sense), say so plainly in "ask" with the reason, suggest a better way as an option, set cmd empty and done=true. Never just go along with a bad idea.
 - When the user reveals something lasting about themselves, ALWAYS add "learn" in that same reply: hobbies and things they collect or love ("i collect anime wallpapers" → interest), job/school/projects (fact), habits and how they like things done (trait). Skip it for plain one-off tasks.
@@ -45,7 +47,7 @@ THINK before acting:
 - COMPLEX tasks (3+ actions): in your FIRST reply send "plan": short, simple to-do steps in order, then do them one by one, setting "step" to the step you are working on. Simple tasks: no plan.
 INTERNET: you can browse. "web": {"search": "..."} returns the top results (title, url, snippet); "web": {"read": "url"} returns that page as text. Results come back next turn (set done=false). Use it for anything current or that you don't know for sure: news, prices, docs, versions, download links, how-tos. ONE search call already reads the text of the top 2 pages for you, so answer from it right away (done=true) and DON'T read again unless it truly lacks the answer. Use at most 2 web calls per task, and make the query short and specific. To SHOW a site to the user, open it with start "" "<url>" instead.
 Be FAST and SMART (every extra step costs the user real seconds):
-- Think the WHOLE task through before the first action, pick the shortest path, and finish it in ONE reply when you can. Don't narrate: "say" is one short line (max ~10 words) and is only needed in the FINAL reply or when you ask something; in middle steps leave it "" unless something surprising happened.
+- Think the WHOLE task through before the first action, pick the shortest path, and finish it in ONE reply when you can. Don't narrate: "say" is one short line (max ~10 words; a list the user asked to see is the exception, see SHOWING RESULTS) and is only needed in the FINAL reply or when you ask something; in middle steps leave it "" unless something surprising happened.
 - The user types fast: read through typos and loose names ("exploer" = Explorer, "movie folder" = a folder named Movies/movies/Movie). Match folder names case-insensitively and by closest meaning.
 - Use the PC CONTEXT below for real paths (Desktop/Documents/Pictures may live in OneDrive). Never search for something already listed there. Ignore copies under CrossDevice, AppData or OneDrive backups unless the user asks for them.
 - When the last action needs no checking (opening a folder/app/file/website, starting something), put it in the same reply and set done=true.
@@ -54,6 +56,11 @@ Be FAST and SMART (every extra step costs the user real seconds):
 - FINDING FILES: NEVER guess paths with dir patterns or "where /r C:\" (minutes slow). Use "find": a fast typo-tolerant search ("freegut" finds "Free.Guy"). Put ALL the user's words in "name", including a parent folder and an episode: "mouse trap episode 3" finds Mousetrap.S01E03.mkv inside the folder "mouse trap" (episode numbers match S01E03 / E03 / ep3). Do NOT search the folder first and the file second: ONE find with "in" set to the library folder from PC CONTEXT (Videos, Documents, Downloads…) does it. Set "ext" only for file types ("mkv mp4 avi"). Set "open": true when they want it opened: the app opens the best match itself; if several are equally good, or none, you get candidates back (done=false): ask with them as "options", or retry with other words.
 - OPENING WITH A SPECIFIC APP ("play it in PotPlayer", "open in VLC"): add "with": "potplayer" to the find (or {"app":{"name":"potplayer","file":"<path>"}} when you already know the path). The app looks the program up in the Start Menu and Program Files itself. NEVER write Program Files paths from memory and never run "if exist" chains to hunt for an app. If the reply says the app is not installed, tell the user and offer the default player as an option.
 - To just open an app ("open spotify", "open notepad"): {"app":{"name":"spotify"}} (or start "" "<name>" for built-in tools like notepad, calc, explorer).
+- OPENING A SITE IN A BROWSER PROFILE ("open gmail in my Kevin chrome profile", "in my work profile"): use "do": {"action":"open_url","params":{"url":"https://mail.google.com","browser":"chrome","profile":"Kevin"}} (or search_web with "profile"). The app reads Chrome's profile list (see "Chrome profiles" in PC CONTEXT) and starts Chrome with that profile, so the user is already signed in. NEVER launch plain chrome.exe for a profile request: that opens a fresh, logged-out profile. If the reply lists the profiles, pick the closest name or ask.
+- Desktop apps that may not exist ("ChatGPT desktop app"): look once ("find"/"app"); if it is not installed, say so and open the website instead of searching again and again.
+- NEVER TRUST MEMORY FOR THE STATE OF FILES. Files change outside this app (the user can see them in File Explorer). Never say something "is already deleted / gone / in the Recycle Bin / still there" from an earlier turn: check NOW (a fresh "find", or cmd Test-Path / dir) and say what you saw. If the user's latest listing shows a file, it EXISTS, whatever you did before.
+- "delete them / those / it / these": means the rows of the MOST RECENT listing in the conversation, nothing older. Trash exactly those paths. If it is unclear which items are meant, ask with options; never answer that they are already gone.
+- "last N" / "latest N" files = the N NEWEST by date. Say which files you are about to trash (names) when you trash. Say "deleted" only when the result says VERIFIED gone from disk; if the result says "still on disk" or "not found", say so plainly.
 - DELETING and UNDO: to delete files/folders ALWAYS use "trash": ["path", ...] (Recycle Bin, so it can be undone). NEVER use del / rd / Remove-Item unless the user says "permanently". When the user says undo / restore / bring it back, use "restore": "<file name>" (done=true); to undo a move or rename, reverse it. If something was already deleted permanently, do NOT just say it is gone: try "restore" first (it may be in the Recycle Bin), then offer Windows File Recovery: winget install --id Microsoft.WindowsFileRecovery -e, then winfr C: D:\recovered /regular /n \Users\<name>\Music\<file> (destination must be ANOTHER drive, needs admin, works best soon after deleting), or OneDrive/Previous Versions.
 - If an approach fails twice, CHANGE strategy (other tool, other command, smaller steps, web search) instead of retrying the same thing. The app will then hand you known-good recipes: use them.
 - A command that timed out or failed proves NOTHING (e.g. "killed after 60s" can mean the app DID open). Never conclude "not installed" or "not found" from a timeout: check with find/app or say you're unsure.
@@ -65,7 +72,10 @@ Be FAST and SMART (every extra step costs the user real seconds):
 - PowerShell is allowed via: powershell -NoProfile -Command "..."
 - Before sending a cmd, silently double-check it: the user's words are copied EXACTLY (never swap or add characters in names, songs or search text), quotes balance, paths exist in PC CONTEXT, and the command really does what was asked. A search must contain the user's real words with normal spaces.
 - In a .bat file a literal % must be written %% (a URL space is %%20, not %20). The app repairs lone %20, but write it right.
-- "SEARCH X": with my / folder / pc / downloads / files (e.g. "search in my movie folder…", "search my downloads for cv") it means search THIS PC: use "find" or list the folder (newest first: dir /o-d). Without them it means the web.
+- "SEARCH X": with my / folder / pc / downloads / files / videos (e.g. "search in my movie folder…", "search my downloads for cv") it means search THIS PC: use "find" or list the folder. Without them it means the web.
+- FILE LISTS: "all movies in videos newest first", "biggest files in downloads", "pdfs from last month", "what's taking space", "duplicates in pictures" → use the browse_files / file_summary / find_duplicates tools (see BUILT-IN TOOLS), never a dir/Get-ChildItem command. "arrived" = date the file came to this PC.
+- RICH ANSWERS: when the answer is 3+ items that each have 2+ details (files, apps, prices, specs, comparisons, schedules), put them in "table" (every item, real values only) and keep "say" to one line. When it is a few headline numbers (disk free, battery, totals, scores), use "stats". Plain one-fact answers stay in "say". Never invent rows or numbers: only what your results showed.
+- SHOWING RESULTS: when the user asked to SHOW / LIST / "all", show every item (table, or one per line in "say"); never answer a list request with "top ones are…". Never write "here's the list" in a reply that still has a cmd: you haven't seen the output yet.
 - "OPEN <browser> AND SEARCH X": the user wants to SEE the search in the browser, so do NOT just answer from the "web" tool. Run ONE command that opens the results page in that browser with the exact words: Chrome → start chrome "https://www.google.com/search?q=elon+musk+net+worth"; Edge → start msedge "https://www.bing.com/search?q=..."; Firefox → start firefox "https://www.google.com/search?q=..."; no browser named → start "" "https://www.google.com/search?q=...". Join the words with +. Opening the browser without the search is a failure. You may add a short answer in "say" afterwards, but the browser must show the search.
 - Spotify: to search, start "" "spotify:search:<words joined with %%20>" (e.g. song "my dear" by Element → spotify:search:my%%20dear%%20element). To play something specific, search first and tell the user to press play; you cannot click inside apps.
 - If you are NOT sure of an app's command-line or URI syntax (Spotify, WhatsApp, Discord, Steam, Teams…), look it up first with "web" search, then build the command from what you found. Never guess syntax.
@@ -102,7 +112,6 @@ async function promptExtras(task, P) {
 
 const q = new URLSearchParams(location.search);
 const mode = q.get('mode') || 'main';
-if (q.get('nat')) document.documentElement.classList.add('native');
 const id = Number(q.get('id'));
 const isChild = q.get('child') === '1';           // opened by a manager window: works on its one job, can't open more agents
 const webMode = q.get('web') === '1';             // /browser agent: works on the internet
@@ -276,8 +285,50 @@ function agent() {
   $('title').textContent = mode === 'script' ? 'script-writer' : mode === 'main' ? 'agent' : 'agent';
   $('host').textContent = `${title.replace('~/', '')}@local`;
   $('ps').textContent = mode === 'script' ? 'script⟹' : 'genisys⟹';
+  // Conversation memory of this window (convo.js): saved in the database, reloaded for 6 hours, given to the router and the AI.
+  const CID = mode === 'main' ? 'main' : `${mode}-${Number.isFinite(id) && id ? id : title}`;
+  const convo = makeConvo();
+  window.api.db('convoRecent', CID, 12, Date.now() - 6 * 3600e3).then((rows) => { if (!convo.size()) convo.load(rows); }).catch(() => {});
+  const noteTurn = (t) => { const n = convo.add(t); if (n) window.api.db('convoAdd', CID, n).catch(() => {}); };
   const log = $('log');
   const input = $('input');
+  const foot = $('form').parentElement;
+  // Message scroller: new output follows only while you're at the bottom; scrolled up to read, a "Jump to latest" pill appears.
+  let pinned = true;
+  const jump = document.createElement('button');
+  jump.type = 'button'; jump.className = 'jump'; jump.hidden = true;
+  jump.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M6 13l6 6 6-6"/></svg>Jump to latest';
+  const toEnd = (force = false) => { if (force) pinned = true; if (pinned) log.scrollTop = log.scrollHeight; else jump.hidden = false; };
+  jump.onclick = () => { toEnd(true); jump.hidden = true; input.focus(); };
+  log.addEventListener('scroll', () => { pinned = log.scrollHeight - log.scrollTop - log.clientHeight < 48; if (pinned) jump.hidden = true; });
+  foot.prepend(jump);
+  // Attachments: files dropped on the window (or picked with Attach) go with the next task as paths on disk.
+  const files = [];
+  const attBar = document.createElement('div');
+  attBar.className = 'atts'; attBar.hidden = true;
+  $('form').before(attBar);
+  const FILE_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg>';
+  const attChip = (p, onRemove) => {
+    const c = document.createElement('span');
+    c.className = 'att'; c.title = p;
+    c.innerHTML = `${FILE_SVG}<span></span>`;
+    c.querySelector('span').textContent = p.split(/[\\/]/).pop();
+    if (onRemove) { const x = document.createElement('button'); x.type = 'button'; x.textContent = '✕'; x.setAttribute('aria-label', `Remove ${p.split(/[\\/]/).pop()}`); x.onclick = onRemove; c.append(x); }
+    return c;
+  };
+  const drawAtts = () => { attBar.hidden = !files.length; attBar.replaceChildren(...files.map((p, i) => attChip(p, () => { files.splice(i, 1); drawAtts(); input.focus(); }))); };
+  const attach = (list) => { for (const p of list) if (p && !files.includes(p) && files.length < 10) files.push(p); drawAtts(); };
+  // Dropping a file anywhere must never navigate the window to it (Electron's default).
+  addEventListener('dragover', (e) => { if (!e.dataTransfer?.types.includes('Files')) return; e.preventDefault(); if (mode !== 'script') foot.classList.add('drop'); });
+  addEventListener('dragleave', (e) => { if (!e.relatedTarget) foot.classList.remove('drop'); });
+  addEventListener('drop', (e) => {
+    if (!e.dataTransfer?.files.length) return;
+    e.preventDefault(); foot.classList.remove('drop');
+    if (mode === 'script') return; // the Script Writer has its own Open / Folder buttons
+    attach([...e.dataTransfer.files].map((f) => window.api.filePath(f)));
+    input.focus();
+  });
+  $('attach')?.addEventListener('click', async () => { attach(await window.api.pickFiles()); input.focus(); });
   let ed = null;
   if (mode === 'script') {
     const RUN = { py: (p) => `python "${p}"`, js: (p) => `node "${p}"`, mjs: (p) => `node "${p}"`, ps1: (p) => `powershell -NoProfile -ExecutionPolicy Bypass -File "${p}"`, bat: (p) => `call "${p}"`, cmd: (p) => `call "${p}"` };
@@ -310,7 +361,8 @@ BROWSER AGENT: you were opened with /browser, so you work on the INTERNET. Use "
   const CHILD = `
 TEAM MEMBER: you are one of several agents working in parallel for a manager. Do ONLY the job you were given, don't ask the user questions unless you are truly blocked, and finish with ONE short result line in "say" (what you found or made, with the key facts) so the manager can report it.`;
   const PC_CONTROLS = `
-BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a cmd): add "do": {"action":"pc","params":{"do":"<control>","value":<number>,"name":"<text>"}} to your JSON. One per reply; it runs before any cmd. value = level/minutes/step when needed; name = app (close_app) or Settings page (open_settings). Risky ones ask the user by themselves. Controls: ${controlsHelp()}.`;
+BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a cmd): add "do": {"action":"pc","params":{"do":"<control>","value":<number>,"name":"<text>"}} to your JSON. One per reply; it runs before any cmd. value = level/minutes/step when needed; name = app (close_app) or Settings page (open_settings). Risky ones ask the user by themselves. Controls: ${controlsHelp()}.
+BUILT-IN TOOLS (same "do"): {"action":"browse_files","params":{"in":"videos|downloads|documents|desktop|pictures|music|home|<full path>|<folder name>","kind":"video|audio|image|document|archive|program|code","ext":"pdf,mkv","name":"<words in name>","when":"today|last week|october|2025|last 30 days|older than 6 months","size":"over 1gb|under 10mb","sort":"arrived|modified|size|name|type|folder","order":"desc|asc","limit":10}} shows a sortable table of every matching file (all subfolders). {"action":"file_summary","params":{...same filters, "group":"kind|type|month|year|folder"}} counts/sizes per group (folder = what takes space). {"action":"find_duplicates","params":{...same filters}} lists identical files. PC tables (read-only, instant): running_apps {sort: memory|cpu|name, name, limit}, installed_apps {sort: name|size|date, name, limit}, drives {}, startup_apps {}, wifi_networks {}. Use them for "what's running / using my RAM", "what programs do I have", "space on my drives", "what starts with Windows", "wifi networks near me". Leave out params you don't need.`;
   const prompt = (mode === 'script' ? SYSTEM + SCRIPT : SYSTEM) + (mode === 'script' ? '' : PC_CONTROLS) + (canDelegate ? TEAM : '') + (webMode ? BROWSER : '') + (isChild ? CHILD : '');
   const history = [{ role: 'system', content: prompt }];
   const taskStarts = []; // where each task began in history (for trimming; never sent to the AI)
@@ -361,7 +413,7 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
           tEl.textContent = fmt(Date.now() - t0);
           if (cur) cur.li.querySelector('.ms').textContent = fmt(Date.now() - cur.t0);
         }, 200);
-        log.append(el); log.scrollTop = log.scrollHeight;
+        log.append(el); toEnd();
       },
       // Plan steps become folders; later actions nest under the step being worked on.
       plan(items) {
@@ -410,7 +462,7 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
         const host = kidsOf();
         host.append(li);
         if (curGroup) { curGroup.kids.push(cur); curGroup.li.querySelector('.gn').textContent = curGroup.kids.length; }
-        log.scrollTop = log.scrollHeight;
+        toEnd();
       },
       detail(t) { const d = cur?.li.querySelector('.det'); if (d) d.replaceChildren(code(t)); },
       fail() { finish(cur, false); cur = null; },
@@ -429,7 +481,7 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
         li.classList.toggle('open', open);
         if (typeof node === 'string') { const t = document.createElement('div'); t.className = 'lo-t'; t.textContent = node; node = t; }
         box.append(node);
-        log.scrollTop = log.scrollHeight;
+        toEnd();
         return node;
       },
       // The model's reasoning ("decided") goes inside its Thinking/Thought step, closed: the answer comes first.
@@ -500,7 +552,8 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
   $('newchat').onclick = () => {
     if (running) { $('newchat').classList.add('shake'); setTimeout(() => $('newchat').classList.remove('shake'), 400); return; }
     history.length = 1;
-    log.replaceChildren();
+    convo.clear(); window.api.db('convoClear', CID).catch(() => {});
+    log.replaceChildren(); jump.hidden = true; pinned = true;
     if (!orbOK) print('dim', 'New chat. Tell me what to do on your PC.', '');
     showWelcome();
     setSt('ready');
@@ -557,7 +610,7 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
     teams.set(group, { card, rows, total: jobs.length, done: 0, ok: 0, results: [] });
     card.querySelector('.q-work b').textContent = `${jobs.length} working`;
     log.append(card);
-    log.scrollTop = log.scrollHeight;
+    toEnd();
     window.api.openMany(jobs.map((j, idx) => ({ kind: 'agent', task: j.task, opts: { child: true, web: j.web, group, idx } })));
   };
   window.api.onAgentDone((info) => {
@@ -610,7 +663,7 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
       c.append(b);
     }
     log.append(c);
-    log.scrollTop = log.scrollHeight;
+    toEnd(true);
     return k;
   };
   const showChat = () => document.body.classList.remove('log-hidden'); // Script Writer: a question or a problem must be seen
@@ -632,7 +685,7 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
     } else if (cls === 'ai' && revealNext) focusReveal(d.lastChild, text); else if (cls === 'ai') focusReveal(d.lastChild, text, true); else d.lastChild.textContent = text;
     if (cls === 'ai') { revealNext = false; addCitations(d.lastChild, cites, { open: (u) => window.api.openPath(u) }); }
     log.append(d);
-    log.scrollTop = log.scrollHeight;
+    toEnd(cls === 'user' || cls === 'ask' || cls === 'err'); // your own message, a question or a problem is always brought into view
     return d;
   };
   const techPrint = (...a) => (DEV ? print(...a) : null); // internals: dev runs only
@@ -646,12 +699,14 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
   const ask = async (msg, o = {}) => {
     const [first, ...rest] = String(msg).split('\n');
     setSt('waiting for you'); showChat();
-    const yes = await confirmItem(log, { title: first, code: o.code ?? rest.join('\n').trim(), desc: o.desc || '', danger: !!o.danger });
-    log.scrollTop = log.scrollHeight;
+    const answer = confirmItem(log, { title: first, code: o.code ?? rest.join('\n').trim(), desc: o.desc || '', danger: !!o.danger });
+    toEnd(true); // the Deny / Approve card must be seen, even when you had scrolled up
+    const yes = await answer;
+    toEnd();
     setSt(yes ? 'running' : 'thinking');
     return yes;
   };
-  setTimeout(() => { log.scrollTop = log.scrollHeight; });
+  setTimeout(() => { toEnd(); });
 
   async function writeFile({ path, content }) {
     // Script Writer: the AI writes into the user's editor buffer, never to disk; the user saves it where they want.
@@ -675,7 +730,7 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
       const d = print('code', '', '');
       const env = /(^|[\\/])\.env(\.[\w.-]+)?$/i.test(r.full) ? parseEnv(content) : [];
       d.lastChild.append(env.length ? envCard(env, { title: r.full.split(/[\\/]/).pop() }) : codeBlock(content, { path: r.full }));
-      log.scrollTop = log.scrollHeight;
+      toEnd();
     }
     return `Wrote file ${r.full}.`;
   }
@@ -715,7 +770,7 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
   // Model down / offline: offer the best remembered command for this task.
   async function fromMemory(task) {
     const [m] = await window.api.db('findMemory', task, 1);
-    if (!m) { print('dim', 'offline and nothing similar in memory yet', 'memory'); return false; }
+    if (!m) { print('dim', "can't reach the AI model right now (check your internet or the model in Settings) and nothing similar is saved in memory yet", 'memory'); return false; }
     if (m.cmds.some(serious)) { print('dim', 'a similar task used a serious command, so it is not replayed from memory', 'memory'); return false; }
     print('mem', `"${m.task}" worked before (${m.uses}×):\n${m.cmds.join('\n')}`, 'memory');
     if (!(await ask('Run the remembered command?', { code: m.cmds.join('\n') }))) return false;
@@ -768,6 +823,8 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
   const describe = (a, p) => ({
     open_app: `Opening ${p.name}`, open_url: `Opening ${host(p.url)}${p.browser ? ` in ${p.browser}` : ''}`,
     search_web: `Searching for "${p.query}"${p.site ? ` on ${p.site}` : ''}`,
+    running_apps: 'Checking running apps', installed_apps: 'Listing installed apps', drives: 'Checking your drives', startup_apps: 'Listing startup apps', wifi_networks: 'Scanning Wi-Fi networks',
+    browse_files: 'Listing your files', file_info: 'Checking it', file_summary: 'Adding up your files', find_duplicates: 'Looking for duplicates',
     open_folder: `Opening your ${p.folder || p.name} folder`, open_file: `Looking for "${p.query}"`, open_path: 'Opening it',
     pc: `${String(p.do).replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase())}${p.value != null && p.value !== 1 ? ` ${p.value}` : ''}${p.name ? ` ${p.name.replace(/_/g, ' ')}` : ''}`,
   }[a] || 'Working on it');
@@ -787,7 +844,7 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
       setSt(ok ? 'done' : 'error'); setRun(false);
       if (ok && mode === 'runner' && OPENERS.has(action)) setTimeout(() => window.api.hideRunner(), 250); // runner bar hides after window-opening commands
     };
-    const store = async (a, p) => { try { await cacheStore(window.api.db, task, a, p, sp.reg); } catch {} };
+    const store = async (a, p) => { if (convo.dependsOn(p)) return; try { await cacheStore(window.api.db, task, a, p, sp.reg); } catch {} }; // an answer built from "it" (a path from this chat) is never saved for the next "how large is it"
     // Run one action; destructive ones are confirmed first, showing exactly what will happen.
     const exec = async (action, params) => {
       let t = performance.now();
@@ -806,29 +863,29 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
       const r = await exec(action, params);
       if (r.status === 'done') { // only shown when it really did something (a failed try falls through to the AI quietly)
         print('cmd', describe(action, params), route);
-        print('out', r.message, route);
+        if (r.stats?.length) log.append(statCards(r.stats));
+        if (r.table) { log.append(dataTable(r.table, { open: (f) => window.api.openPath(f) })); toEnd(); } else print('out', r.message, route);
         if (route !== 'cache') await store(r.resolved?.action || action, r.resolved?.params || params);
-        await finish(route, action, true);
+        noteTurn({ task, route, action, params, say: r.message, rows: rowsFrom(r.data, r.table?.paths), n: String(r.data || '').split('\n').filter((l) => l && !l.startsWith('…')).length });
+        await finish(route, action, true, { answer: r.table ? `${r.message}\n${r.data || ''}` : r.message, params });
         return true;
       }
       if (r.status === 'choose') { // a few close matches: clickable choices, never a guess
         const before = performance.now() - F0;
-        const d = print('ask', r.message, 'ask');
-        const br = document.createElement('div');
-        for (const o of r.options) {
-          const b = document.createElement('button');
-          b.className = 'btn'; b.textContent = o.label; b.title = o.detail;
-          b.onclick = async () => {
-            if (running) return;
-            br.remove(); setRun(true); setSt('running');
+        showChat();
+        const q = questionCard(log, { question: r.message, options: r.options.map((o) => ({ label: o.label, detail: o.detail })), onPick: (pick) => {
+          if (running) return false;
+          const o = r.options.find((x) => x.label === pick.label);
+          (async () => {
+            setRun(true); setSt('running');
             const t = performance.now();
             const rr = await exec(o.action, o.params);
             if (rr.status === 'done') { print('out', rr.message, 'out'); await store(o.action, o.params); await finish('fast', action, true, { result: 'chosen' }, before + performance.now() - t); }
             else { print('err', rr.reason || 'could not open it', ''); await finish('fast', action, false, { result: 'choice failed' }, before + performance.now() - t); }
-          };
-          br.append(b);
-        }
-        d.lastChild.append(br);
+          })();
+        } });
+        toEnd(true);
+        $('form').addEventListener('submit', () => setTimeout(() => q.settle(), 0), { once: true });
         setSt('waiting for your answer'); setRun(false);
         return true;
       }
@@ -837,19 +894,34 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
       return false;
     };
 
-    // 1. cache: a command that worked before (the saved target is re-checked first)
+    // 1. fast path: the code understands it, zero model calls. It runs BEFORE the cache so a smarter parser is never
+    //    shadowed by an answer saved under the same words (the cache remembers what the AI decided, not what the code knows).
+    // "delete them / those / it" right after a listing: exactly the rows of the latest listing, confirmed, then checked on disk.
+    const ref = convo.deleteRef(task);
+    if (ref) {
+      print('cmd', 'Moving the listed items to the Recycle Bin', 'fast');
+      const yes = await ask(`Move ${ref.paths.length} item${ref.paths.length === 1 ? '' : 's'} to the Recycle Bin?`, { code: ref.paths.join('\n'), desc: 'Exactly the items listed above. You can get them back from the Recycle Bin.' });
+      if (!yes) { print('dim', 'skipped', ''); await finish('fast', 'trash', false, { result: 'refused' }); return done(true); }
+      const res = await window.api.trash(ref.paths);
+      const good = res.filter((x) => x.ok), bad = res.filter((x) => !x.ok);
+      if (good.length) print('out', `Moved to the Recycle Bin (checked, they are gone from the folder): ${good.map((x) => baseName(x.path)).join(', ')}`, 'fast');
+      if (bad.length) print('err', `Not deleted: ${bad.map((x) => `${baseName(x.path)} (${x.error})`).join(', ')}`, 'fast');
+      noteTurn({ task, route: 'fast', action: 'trashed', say: `${good.length ? `checked, moved to the Recycle Bin: ${good.map((x) => baseName(x.path)).join(', ')}.` : ''}${bad.length ? ` NOT deleted: ${bad.map((x) => `${baseName(x.path)} (${x.error})`).join(', ')}.` : ''}`.trim() });
+      await finish('fast', 'trash', !bad.length);
+      return done(true);
+    }
     let t = performance.now();
+    const it = parseIntent(task);
+    mark('parse', t);
+    if (it.action !== 'unknown' && it.confidence >= FAST_MIN) return done(await handle('fast', it.action, it.params));
+    // 2. cache: an AI decision that worked before (the saved target is re-checked first)
+    t = performance.now();
     const hit = await cacheLookup(window.api.db, window.api.fastValid, task);
     mark('cache', t);
     if (hit) {
       if (await handle('cache', hit.action, hit.params)) return done(true);
       await window.api.db('cacheDrop', cacheKey(task));
     }
-    // 2. fast path: the code understands it, zero model calls
-    t = performance.now();
-    const it = parseIntent(task);
-    mark('parse', t);
-    if (it.action !== 'unknown' && it.confidence >= FAST_MIN) return done(await handle('fast', it.action, it.params));
     // 2b. several simple commands in one line ("open spotify and put volume at 40%"): each runs in order, still zero model calls
     const parts = splitTask(task);
     const its = parts && parts.map((p) => parseIntent(p));
@@ -858,7 +930,7 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
       for (const x of its) {
         print('cmd', describe(x.action, x.params), 'fast');
         const r = await exec(x.action, x.params);
-        if (r.status === 'done') { print('out', r.message, 'fast'); ran++; continue; }
+        if (r.status === 'done') { print('out', r.message, 'fast'); noteTurn({ task: x.normalized || task, route: 'fast', action: x.action, params: x.params, say: r.message, rows: rowsFrom(r.data, r.table?.paths), n: String(r.data || '').split('\n').filter((l) => l && !l.startsWith('…')).length }); ran++; continue; }
         if (r.status === 'refused') { print('dim', 'skipped', ''); continue; }
         if (!ran) return done(false); // nothing happened yet: let the AI take the whole task
         ok = false; print('err', r.reason || r.message || "couldn't do that part", ''); break;
@@ -870,7 +942,7 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
 
     // 3. AI router: ONE short JSON call (max 2 with the retry), everything it says is validated in code.
     // File tasks: it gets the same folder map as the AI, so "movie folder" resolves to Videos\Movies, not Videos.
-    const msgs = buildRouterMessages(sp.lines, task, isFileTask(task) ? `${sp.folders}\n${await window.api.context(task).catch(() => '')}` : sp.folders);
+    const msgs = buildRouterMessages(sp.lines, task, isFileTask(task) ? `${sp.folders}\n${await window.api.context(task).catch(() => '')}` : sp.folders, [isFileTask(task) ? fileRules() : '', convo.prompt({ maxChars: 1800 })].filter(Boolean).join('\n\n'));
     let routed = null, lastErr = '', lastRaw = '';
     for (let attempt = 0; attempt < 2 && !routed; attempt++) {
       setSt('thinking');
@@ -878,7 +950,7 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
       t = performance.now(); st.calls++;
       let raw;
       try { raw = await window.api.ai(attempt ? [...msgs, { role: 'assistant', content: lastRaw }, { role: 'user', content: `Invalid (${lastErr}). Reply with ONLY the JSON.` }] : msgs, false, { fast: true, maxTokens: 200, timeoutMs: 5000 }); }
-      catch { mark('router', t); live.stop(false); return done(false); } // providers down: the old loop has its own retries and memory fallback
+      catch { mark('router', t); live.stop(false); if (/^file table/.test(it.reason)) return done(await handle('fast', it.action, it.params)); return done(false); } // providers down: the code's own reading of a file table, else the old loop (own retries + memory fallback)
       mark('router', t);
       live.stop(true);
       const v = validateRouterReply(raw, sp.reg, { env: sp.env });
@@ -924,10 +996,10 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
 
   const INSIST = /^!\s*|\b(ask ai|use ai|fresh|redo|think again)\b/gi;
 
-  async function loop(task, want = null) { // want = { n, web } from "/agent N task": this window's AI splits the work across N agents
+  async function loop(task, want = null, att = []) { // want = { n, web } from "/agent N task": this window's AI splits the work across N agents; att = attached file paths
     setRun(true); stopped = false;
     const speedMode = await window.api.db('getSetting', 'speedMode', 'new'); // 'new' (default: fast route first) or 'old'
-    const insist = /^!|\b(ask ai|use ai|fresh|redo|think again)\b/i.test(task);
+    const insist = att.length > 0 || /^!|\b(ask ai|use ai|fresh|redo|think again)\b/i.test(task);
     // "yes", "ep1", "the second one" answer the AI's question: straight back to the AI, no fast route or saved task.
     const answer = !!waitingAnswer && (task.trim().split(/\s+/).length <= 6 || waitingAnswer.some((o) => String(o).toLowerCase() === task.trim().toLowerCase()));
     waitingAnswer = null;
@@ -962,7 +1034,7 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
     let lastSay = '';
     // Fresh folder snapshot + personality/profile/memory each task.
     const open = ed?.current();
-    history[0].content = `${prompt}\n\n${await promptExtras(task, P)}\n\nPC CONTEXT:\n${await window.api.context(task)}${open ? `\n\nOPEN IN THE EDITOR (the user may have edited it; build on this version):\n${open.path}\n${open.text.slice(0, 12000)}` : ''}${ed?.folder() ? `\n\nFOLDER OPEN IN THE EDITOR: ${ed.folder().root}\n${ed.folder().files.join('\n')}` : ''}`;
+    history[0].content = `${prompt}\n\n${await promptExtras(task, P)}${convo.prompt() ? `\n\n${convo.prompt()}` : ''}\n\nPC CONTEXT:\n${await window.api.context(task)}${open ? `\n\nOPEN IN THE EDITOR (the user may have edited it; build on this version):\n${open.path}\n${open.text.slice(0, 12000)}` : ''}${ed?.folder() ? `\n\nFOLDER OPEN IN THE EDITOR: ${ed.folder().root}\n${ed.folder().files.join('\n')}` : ''}`;
     tadd('promptBuild', performance.now() - p0);
     // Keep the prompt small: system + the last 2 tasks; older tool results cut to 1,500 chars.
     if (taskStarts.length >= 2) {
@@ -971,7 +1043,7 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
     }
     for (let i = 1; i < history.length; i++) if (!taskStarts.includes(i) && history[i].role === 'user' && history[i].content.length > 1500) history[i].content = `${history[i].content.slice(0, 1500)}\n…(cut)`;
     taskStarts.push(history.length);
-    history.push({ role: 'user', content: want ? `${task}\n\n[The user asked for ${want.n} agents${want.web ? ' that work on the web' : ''} for this. Split the work into exactly ${want.n} independent jobs with "delegate"${want.web ? ' (set web: true on each)' : ''}, unless it is too small to split: then say you'll do it yourself and do it.]` : task });
+    history.push({ role: 'user', content: want ? `${task}\n\n[The user asked for ${want.n} agents${want.web ? ' that work on the web' : ''} for this. Split the work into exactly ${want.n} independent jobs with "delegate"${want.web ? ' (set web: true on each)' : ''}, unless it is too small to split: then say you'll do it yourself and do it.]` : att.length ? `${task}\n\n[ATTACHED FILES (the user dropped these in; "this", "these", "the file" mean them; use the exact paths):\n${att.join('\n')}]` : task });
     // Quick answers by default; deep reasoning only when asked (Settings), for /agent, very long requests, or after a step fails.
     let think = P.deep || !!want || task.split(/\s+/).length > 25;
     let plan = null; // checklist box when the AI breaks the task into steps
@@ -1061,10 +1133,12 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
         print('ai', reply.say, '›');
         lastSay = reply.say;
       }
+      if (Array.isArray(reply.table?.columns) && Array.isArray(reply.table?.rows) && reply.table.rows.length) { log.append(dataTable(reply.table)); toEnd(); }
+      if (Array.isArray(reply.stats) && reply.stats.length) { log.append(statCards(reply.stats)); toEnd(); }
       if (reply.code?.text) { // code to show: a code block here, or straight into the Script Writer's editor
         const lang = String(reply.code.lang || '').toLowerCase(), text = String(reply.code.text);
         if (ed) ed.open('', text, `script.${EXT[lang] || lang || 'txt'}`);
-        else { const d = print('code', '', ''); d.lastChild.append(/^(env|dotenv)$/.test(lang) && parseEnv(text).length ? envCard(parseEnv(text)) : codeBlock(text, { lang })); log.scrollTop = log.scrollHeight; }
+        else { const d = print('code', '', ''); d.lastChild.append(/^(env|dotenv)$/.test(lang) && parseEnv(text).length ? envCard(parseEnv(text)) : codeBlock(text, { lang })); toEnd(); }
       }
       if (reply.decided && !live.reason(String(reply.decided))) print('decided', reply.decided, 'decided');
       if (reply.learn?.text && P.learning) {
@@ -1093,18 +1167,11 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
       }
       // A question/warning means "don't act yet": never run anything alongside it.
       if (reply.ask) {
-        const d = print('ask', reply.ask, 'ask');
-        if (Array.isArray(reply.options) && reply.options.length) {
-          const br = document.createElement('div');
-          for (const o of reply.options.slice(0, 4)) {
-            const b = document.createElement('button');
-            b.className = 'btn';
-            b.textContent = o;
-            b.onclick = () => { if (running) return; br.remove(); input.value = String(o); $('form').requestSubmit(); };
-            br.append(b);
-          }
-          d.lastChild.append(br);
-        }
+        showChat();
+        const opts = Array.isArray(reply.options) ? reply.options.slice(0, 4).map(String) : [];
+        const q = questionCard(log, { question: reply.ask, options: opts, onPick: (o) => { if (running) return false; input.value = String(o.label); $('form').requestSubmit(); } });
+        toEnd(true);
+        $('form').addEventListener('submit', () => setTimeout(() => q.settle(), 0), { once: true }); // typing an answer instead of clicking one folds the card too
         asked = true;
         waitingAnswer = Array.isArray(reply.options) ? reply.options : [];
         break;
@@ -1117,7 +1184,10 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
         live.step('working', say);
         let r = await window.api.fast(pd.action, pd.params);
         if (r.status === 'confirm') r = (await ask(r.preview)) ? await window.api.fast(pd.action, pd.params, true) : { status: 'refused' };
-        if (r.status === 'done') { live.out(r.message, false); results.push(`Done: ${r.message}`); webSteps++; }
+        if (r.status === 'done' && r.table) { live.out(r.message, false); if (r.stats?.length) log.append(statCards(r.stats)); log.append(dataTable(r.table, { open: (f) => window.api.openPath(f) })); toEnd(); results.push(`Done: ${r.message}
+${r.data}
+(The user already sees this as a table. Do not repeat it: one short line in say, done=true.)`); webSteps++; }
+        else if (r.status === 'done') { live.out(r.message, false); results.push(`Done: ${r.message}`); webSteps++; }
         else if (r.status === 'refused') results.push('The user said no to that. Choose another way or finish.');
         else { results.push(`That built-in control failed: ${r.reason || r.message || 'unknown'}. Try another way.`); stepFailed = true; live.fail(); }
       }
@@ -1134,8 +1204,8 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
         else {
           const r = await window.api.trash(list);
           const good = r.filter((x) => x.ok), bad = r.filter((x) => !x.ok);
-          if (good.length) { results.push(`Moved to the Recycle Bin (can be restored with "restore"): ${good.map((x) => x.path).join(' | ')}`); live.out(`moved ${good.length} item${good.length === 1 ? '' : 's'} to the Recycle Bin (undoable)`, false); for (const x of good) changes.push({ status: 'D', path: x.path }); webSteps++; }
-          if (bad.length) { results.push(`Could not trash: ${bad.map((x) => `${x.path} (${x.error})`).join(' | ')}`); stepFailed = true; live.out(`couldn't remove ${bad.length} item${bad.length === 1 ? '' : 's'}: ${bad[0].error}`); live.fail(); }
+          if (good.length) { results.push(`VERIFIED gone from disk (checked after the delete) and now in the Recycle Bin (restore with "restore"): ${good.map((x) => x.path).join(' | ')}. Tell the user these exact names.`); live.out(`moved ${good.length} item${good.length === 1 ? '' : 's'} to the Recycle Bin (undoable)`, false); for (const x of good) changes.push({ status: 'D', path: x.path }); webSteps++; }
+          if (bad.length) { results.push(`NOT deleted (the file is still there): ${bad.map((x) => `${x.path} (${x.error})`).join(' | ')}. Do not say these were deleted.`); stepFailed = true; live.out(`couldn't remove ${bad.length} item${bad.length === 1 ? '' : 's'}: ${bad[0].error}`); live.fail(); }
         }
       }
       if (reply.restore && !stopped) {
@@ -1190,7 +1260,7 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
           setSt('running');
           const { code, out } = await tm('cmdRun', window.api.run(reply.cmd));
           ran.push(reply.cmd);
-          if (DEV) live.out(codeBlock(`${reply.cmd}${out.trim() ? `\n\n${out.trim()}` : ''}`, { title: 'Command and output', lang: 'text' }), false);
+          if (DEV) live.out(toolCard({ name: reply.cmd.split('\n')[0].slice(0, 80), input: reply.cmd, output: out.trim(), ok: !code, status: code ? `exit ${code}` : 'Completed' }), false);
           // dir/where/findstr exit 1 just means "nothing matched": not an error, no need for deep thinking.
           const soft = code === 1 && /^\s*(dir|where|findstr|tasklist|fc)\b/i.test(reply.cmd);
           let openedByApp = false;
@@ -1233,13 +1303,15 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
       if (step === limit()) { print('err', `Stopped after ${limit()} steps.`, 'limit'); failed = true; }
     }
     live.stop(!failed && !stopped, stopped ? 'Stopped after' : '');
-    if (changes.length >= 2) { log.append(changesCard(changes, { message: `Changed ${changes.length} files: ${task.replace(/\s+/g, ' ').slice(0, 70)}`, open: (f) => window.api.openPath(f) })); log.scrollTop = log.scrollHeight; }
+    if (changes.length >= 2) { log.append(changesCard(changes, { message: `Changed ${changes.length} files: ${task.replace(/\s+/g, ' ').slice(0, 70)}`, open: (f) => window.api.openPath(f) })); toEnd(); }
     const secs = (Date.now() - t0) / 1000;
     const ok = (!failed && !stopped && !asked) || offlineOk;
-    window.api.timing('log', { text: task, route: 'old', mode: speedMode, ok: !!ok, stopped, asked, failed, fails, modelCalls, steps: ran.length + webSteps, totalMs: Math.round(Date.now() - t0), stages: TM }).catch(() => {});
+    window.api.timing('log', { text: task, route: 'old', mode: speedMode, ok: !!ok, stopped, asked, failed, fails, modelCalls, steps: ran.length + webSteps, totalMs: Math.round(Date.now() - t0), stages: TM, answer: lastSay || undefined }).catch(() => {});
     // Remember only clean runs: every command exit 0, nothing refused, no question left open.
-    if (ok && !offlineOk && allOk && ran.length && !ran.some(serious)) await window.api.db('remember', task, ran, lastSay);
+    if (ok && !offlineOk && allOk && ran.length && !att.length && !ran.some(serious)) await window.api.db('remember', task, ran, lastSay);
     if (!asked) {
+      const gone = changes.filter((c) => c.status === 'D').map((c) => baseName(c.path));
+      if (lastSay || gone.length) noteTurn({ task, route: 'ai', action: gone.length ? 'trashed' : ran.length ? 'ran commands' : 'answered', say: `${lastSay || ''}${gone.length ? ` [checked: moved to the Recycle Bin: ${gone.join(', ')}]` : ''}`.trim() });
       await window.api.db('logTask', title, task, ran.length, secs, ok);
       if (!ok && !stopped && (await window.api.db('failsToday', task)) >= 2) {
         window.api.notify('problem', `"${task.slice(0, 60)}" failed again today. Try rewording it, or check Settings → models.`);
@@ -1617,8 +1689,10 @@ BUILT-IN PC CONTROLS (instant and reliable, ALWAYS prefer these over writing a c
       return;
     }
     if (mode === 'runner' && !document.body.classList.contains('open')) { document.body.classList.add('open'); window.api.runnerOpen(); }
-    print('user', task, '$');
-    loop(task);
+    const att = files.splice(0); drawAtts();
+    const row = print('user', task, '$');
+    if (att.length) { const a = document.createElement('div'); a.className = 'atts'; a.append(...att.map((p) => attChip(p))); row.lastChild.append(a); }
+    loop(task, null, att);
   };
   $('stop').onclick = () => { if (running) { stopped = true; setSt('stopping…'); live.step('stopping', 'finishing the current step'); abort?.(); } };
   $('send').addEventListener('click', (e) => { if (running) { e.preventDefault(); $('stop').click(); } });

@@ -76,3 +76,63 @@ test('app-or-site names: the desktop app first, the website only when asked for 
   assert.equal(c.params.browser, 'chrome');
   assert.equal(parseIntent('open youtube').action, 'open_url'); // a site only
 });
+
+// Training rounds (Nov 2026): phrases real users typed that used to misfire or fall to the slow AI.
+const TRAINED = [
+  ['opn chrome', 'open_app', { name: 'chrome' }],
+  ['open the folder called projects', 'open_folder', { name: 'projects' }],
+  ['search wikipedia for einstein', 'search_web', { query: 'einstein', site: 'wikipedia' }],
+  ['search stack overflow for electron ipc', 'search_web', { query: 'electron ipc', site: 'stackoverflow' }],
+  ['open c:', 'open_path', { path: 'C:\\' }],
+  ['open d drive', 'open_path', { path: 'D:\\' }],
+  ['open C:\\Users', 'open_path', { path: 'C:\\Users' }],
+  ['open the pdf called resume', 'open_file', { query: 'resume', ext: 'pdf' }],
+  ['open excel file budget', 'open_file', { query: 'budget', ext: 'xlsx' }],
+  ['open calculator app', 'open_app', { name: 'calculator' }],
+  ['open stack overflow', 'open_url', { url: 'https://stackoverflow.com' }],
+  ['whats the weather', 'search_web', { query: 'weather' }],
+  ['weather in kigali', 'search_web', { query: 'weather in kigali' }],
+  ['what is 15% of 200', 'search_web', { query: '15% of 200' }],
+  ['convert 5 miles to km', 'search_web', { query: '5 miles to km' }],
+  ['what time is it', 'pc', { do: 'clock' }],
+  ['files i downloaded yesterday', 'browse_files', { in: 'downloads', when: 'yesterday' }],
+];
+for (const [text, action, params] of TRAINED) {
+  test(`trained: "${text}"`, () => {
+    const r = parseIntent(text);
+    assert.equal(r.action, action, JSON.stringify(r));
+    assert.ok(r.confidence >= FAST_MIN, `confidence ${r.confidence} for ${text}`);
+    for (const [k, v] of Object.entries(params)) assert.equal(r.params[k], v, `${k} in ${JSON.stringify(r.params)}`);
+  });
+}
+// These used to run as a nonsense app name or a wrong search; now the AI decides.
+for (const text of ['search for resume.pdf', 'open chrome in incognito', 'open chrome settings', 'open 3 chrome windows', 'open latest download', 'play the last song', 'close chrome and open edge', 'what is a pdf', 'what is windows 11', 'show hidden files', 'weather app']) {
+  test(`trained, not fast: "${text}"`, () => {
+    const r = parseIntent(text);
+    assert.ok(r.action === 'unknown' || r.confidence < FAST_MIN, `${text} -> ${JSON.stringify(r)}`);
+  });
+}
+
+test('"in movies" keeps the folder word so a real Movies folder can win (Stage 3)', async () => {
+  const { parseFileQuery } = await import('./fileQuery.js');
+  assert.equal(parseFileQuery('show me in movies').params.in, 'movies');
+  assert.equal(parseFileQuery('show me 5 movies in movies folder').params.in, 'movies');
+  assert.equal(parseFileQuery('show me latest movies in videos/movie folder').params.in, 'videos/movie');
+  assert.equal(parseFileQuery('list of movies').params.in, undefined);
+});
+
+test('browser profiles: "in kevin chrome profile" is a profile, "in chrome" is only a browser', () => {
+  const r = (t) => parseIntent(t);
+  assert.deepEqual(r('open gmail in kevin chrome profile').params, { url: 'https://mail.google.com', browser: 'chrome', profile: 'kevin' });
+  assert.equal(r('open gmail in kevins chrome').params.profile, 'kevins');
+  assert.equal(r('open youtube with my work profile').params.profile, 'work');
+  assert.deepEqual(r('search cats in kevin chrome profile').params, { query: 'cats', browser: 'chrome', profile: 'kevin' });
+  assert.equal(r('open gmail in chrome').params.profile, undefined);
+  assert.equal(r('open gmail in my chrome').params.profile, undefined);
+  assert.equal(r('open gmail').params.profile, undefined);
+});
+test('typo in a site name ("gmain") and "chatgpt deskrop app"', () => {
+  const g = parseIntent('open gmain in kevin chrome profile');
+  assert.equal(g.action, 'open_url'); assert.equal(g.params.url, 'https://mail.google.com'); assert.ok(g.confidence >= FAST_MIN);
+  for (const t of ['open chatgpt deskrop app', 'open chatgpt desktop app']) { const x = parseIntent(t); assert.equal(x.action, 'open_app'); assert.equal(x.params.name, 'chatgpt'); assert.ok(x.params.url); }
+});

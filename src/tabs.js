@@ -167,6 +167,7 @@ async function settingsTab(root) {
       <div class="srow"><div><b>Start with Windows</b><span>Opens Genisys quietly when you sign in. <em id="as-note"></em></span></div><label class="tg"><input type="checkbox" name="autostart"><i></i></label></div>
       <div class="srow"><div><b>Automatic updates</b><span>Genisys checks every few minutes, downloads new versions by itself and installs them while you are not using it.</span></div><label class="tg"><input type="checkbox" name="autoUpdate"><i></i></label></div>
       <div class="srow"><div><b>Send error reports</b><span>When something breaks, the error message and app version go to the developer. Your user folder and name are removed first.</span></div><label class="tg"><input type="checkbox" name="sendErrors"><i></i></label></div>
+      <div class="srow"><div><b>Share conversations</b><span>Send what you ask and what Genisys answers (no files, no passwords) so the app learns which requests to get better at. Your user folder and name are removed first. Off by default.</span></div><label class="tg"><input type="checkbox" name="shareChats"><i></i></label></div>
     </section>
     <div class="savebar"><button class="btn primary">Save settings</button> <span id="saved" class="muted"></span></div>`;
   f.querySelectorAll('[data-anim]').forEach((c) => {
@@ -207,6 +208,7 @@ async function settingsTab(root) {
   f.custom.value = P.custom;
   f.autostart.checked = autostart;
   f.sendErrors.checked = await window.api.db('getSetting', 'sendErrors', false);
+  f.shareChats.checked = (await window.api.db('getSetting', 'shareChats', false)) === true;
   f.autoUpdate.checked = (await window.api.db('getSetting', 'autoUpdate', true)) !== false;
   f.speed.checked = (await window.api.db('getSetting', 'speedMode', 'new')) === 'new';
   const paintSpeed = async () => {
@@ -242,6 +244,7 @@ async function settingsTab(root) {
     });
     await window.api.db('setSetting', 'speedMode', f.speed.checked ? 'new' : 'old');
     await window.api.db('setSetting', 'sendErrors', f.sendErrors.checked);
+    await window.api.db('setSetting', 'shareChats', f.shareChats.checked);
     await window.api.db('setSetting', 'autoUpdate', f.autoUpdate.checked);
     const packaged = await window.api.autostart(f.autostart.checked);
     $('as-note').textContent = packaged ? '' : 'Applies in the installed app only.';
@@ -473,7 +476,102 @@ async function reportTab(root) {
   msg.focus();
 }
 
-const TABS = { settings: settingsTab, keys: keysTab, memory: memoryTab, about: aboutTab, notes: notesTab, report: reportTab };
+// About Genisys: version, where every piece of app data lives (with sizes and Open buttons), the PC, the AI in use,
+// the search index, and how to reach the developer. "Copy all" puts a plain-text summary on the clipboard for support.
+const DEV_LINKS = [
+  { name: 'X (Twitter)', handle: '@KevinKiz', url: 'https://x.com/KevinKiz', icon: '<path d="M4 4l16 16M20 4 4 20"/>' },
+  { name: 'Instagram', handle: '@kevin___kiz', url: 'https://www.instagram.com/kevin___kiz/', icon: '<rect width="16" height="16" x="4" y="4" rx="5"/><circle cx="12" cy="12" r="3.5"/><path d="M16.5 7.5v.01"/>' },
+];
+async function appTab(root) {
+  const i = await window.api.appInfo();
+  const bytes = (n) => (n == null ? '—' : n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : n < 1073741824 ? `${(n / 1048576).toFixed(1)} MB` : `${(n / 1073741824).toFixed(2)} GB`);
+  const when = (t) => (t ? `${new Date(t).toLocaleString()} (${ago(t)})` : 'not yet');
+  const kv = (rows) => {
+    const d = el('div', 'ab-kv');
+    for (const [k, v] of rows) { if (v === undefined || v === null || v === '') continue; d.append(el('span', 'ab-k', k), el('span', 'ab-v', String(v))); }
+    return d;
+  };
+
+  const head = el('div', 'ab-head');
+  head.innerHTML = '<img class="ab-logo" alt=""><div class="ab-id"><b>Genisys</b><span></span></div>';
+  head.querySelector('img').src = document.querySelector('img.logo')?.src || './assets/icon.svg'; // same file the header already resolved
+  head.querySelector('.ab-id span').textContent = `Version ${i.app.version}${i.app.packaged ? '' : ' (developer build)'}`;
+  const upd = el('span', 'muted ab-upd');
+  const chk = btn('Check for updates', async () => {
+    chk.disabled = true; upd.textContent = 'Checking…';
+    try { const r = await window.api.checkUpdates(); upd.textContent = r.dev ? 'Updates only apply to the installed app.' : r.latest && r.latest !== r.current ? `Genisys ${r.latest} is available. See Notes to install it.` : `You have the latest version (${r.current}).`; }
+    catch { upd.textContent = "Couldn't check right now. Try again later."; }
+    chk.disabled = false;
+  });
+  head.append(chk);
+  root.append(head, upd);
+
+  const dev = el('div', 'ab-dev');
+  dev.append(el('p', 'muted', 'Made by Kevin. Questions, ideas or something broken? Message me, or use the Report tab.'));
+  const links = el('div', 'ab-links');
+  for (const l of DEV_LINKS) {
+    const b = el('button', 'ab-link'); b.type = 'button'; b.title = l.url;
+    b.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">${l.icon}</svg><span><b></b><small></small></span>`;
+    b.querySelector('b').textContent = l.name; b.querySelector('small').textContent = l.handle;
+    b.onclick = () => window.api.openPath(l.url);
+    links.append(b);
+  }
+  dev.append(links);
+  root.append(section('developer', dev));
+
+  const files = el('div', 'ab-files');
+  for (const f of i.data.files) {
+    const r = el('div', `ab-file${f.exists ? '' : ' none'}`);
+    r.append(el('span', 'ab-fn', f.name), el('span', 'ab-fs', f.exists ? bytes(f.size) : 'not created yet'));
+    const what = el('span', 'ab-fw', f.what); what.title = f.path;
+    r.append(what);
+    if (f.exists) r.append(btn('Open', () => (/\.[a-z]+$/i.test(f.path) ? window.api.reveal(f.path) : window.api.openPath(f.path))));
+    files.append(r);
+  }
+  const dataHead = el('div', 'ab-datah');
+  dataHead.append(el('span', 'ab-v', i.data.folder), el('span', 'ab-k', `${bytes(i.data.total)} in total`), btn('Open folder', () => window.api.openPath(i.data.folder), 'btn primary'));
+  root.append(section('app data', dataHead, files));
+
+  root.append(section('this pc', kv([
+    ['Windows', i.system.windows], ['Processor', `${i.system.cpu} · ${i.system.cores} threads`], ['Memory', `${bytes(i.system.ram)} (${bytes(i.system.freeRam)} free)`],
+    ['Drives', i.system.drives], ['Computer', i.system.computer], ['User', i.system.user], ['Language', i.system.locale], ['Architecture', i.system.arch],
+  ])));
+  const fast = Object.entries(i.ai.fastKeys).map(([k, n]) => `${k}: ${n}`).join(', ');
+  root.append(section('ai', kv([
+    ['Model in use', i.ai.using], ['Your own keys', i.ai.ownKeys.join(', ') || 'none'], ['OpenRouter keys', i.ai.openrouterKeys], ['Fast provider keys', fast || 'none'],
+    ['Speed mode', i.app.speedMode === 'new' ? 'Fast (code first, then AI)' : 'Classic (AI for everything)'],
+  ])));
+  root.append(section('search index', kv([
+    ['Whole PC (/search)', `${i.index.pcEntries.toLocaleString()} files and folders · scanned ${when(i.index.pcScanned)}`],
+    ['Your folders (AI)', `${i.index.userEntries.toLocaleString()} entries · scanned ${when(i.index.userScanned)}`],
+    ['Microsoft Store apps', i.index.storeApps], ['Rescans', 'when Genisys starts, then every 5 minutes'],
+  ])));
+  root.append(section('saved by you', kv([
+    ['Remembered commands', i.saved.memory], ['Things about you', i.saved.profile], ['Notes', i.saved.notes], ['Cached fast commands', i.saved.cached], ['Trusted scripts', i.saved.scripts],
+  ])));
+  root.append(section('app', kv([
+    ['Version', i.app.version], ['Installed in', i.app.installDir], ['Program', i.app.exe],
+    ['Starts with Windows', i.app.autostart ? (i.app.startsWithWindows === false && i.app.packaged ? 'on in Settings, but not registered with Windows yet' : 'yes') : 'no'],
+    ['Automatic updates', i.app.autoUpdate ? 'on' : 'off'], ['Running since', when(i.app.startedAt)],
+    ['Electron', i.app.electron], ['Chromium', i.app.chrome], ['Node.js', i.app.node], ['V8', i.app.v8],
+  ])));
+
+  // Plain text for support messages (no keys: only counts).
+  const text = [
+    `Genisys ${i.app.version}${i.app.packaged ? '' : ' (dev)'} · Electron ${i.app.electron} · Chromium ${i.app.chrome} · Node ${i.app.node}`,
+    `Windows ${i.system.windows} ${i.system.arch} · ${i.system.cpu} · ${bytes(i.system.ram)} RAM · drives ${i.system.drives}`,
+    `Installed in ${i.app.installDir} · starts with Windows: ${i.app.autostart ? 'yes' : 'no'} · auto-update: ${i.app.autoUpdate ? 'on' : 'off'}`,
+    `AI: ${i.ai.using} · OpenRouter keys ${i.ai.openrouterKeys} · fast keys ${fast || 'none'}`,
+    `Index: ${i.index.pcEntries} PC entries, ${i.index.userEntries} folder entries, ${i.index.storeApps} Store apps`,
+    `App data ${i.data.folder} (${bytes(i.data.total)}):`, ...i.data.files.map((f) => `  ${f.name}: ${f.exists ? bytes(f.size) : 'none'}`),
+  ].join('\n');
+  const copyMsg = el('span', 'muted');
+  const copy = btn('Copy all', async () => { try { await navigator.clipboard.writeText(text); copyMsg.textContent = 'Copied. Paste it into a message or the Report tab.'; } catch { copyMsg.textContent = "Couldn't copy."; } });
+  const bar = el('div', 'ab-bar'); bar.append(copy, copyMsg);
+  root.append(bar);
+}
+
+const TABS = { settings: settingsTab, keys: keysTab, memory: memoryTab, about: aboutTab, app: appTab, notes: notesTab, report: reportTab };
 // Opens the settings panel on a page; "close" (or unknown) hides it.
 export async function render(name) {
   const open = !!TABS[name];

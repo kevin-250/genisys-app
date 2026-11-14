@@ -40,6 +40,7 @@ export async function register(acc) {
   const account = { email: String(acc.email || '').trim().toLowerCase(), name: String(acc.name || '').trim().slice(0, 60), theme: acc.theme };
   db.setSetting('account', account);
   db.setSetting('sendErrors', !!acc.sendErrors);
+  db.setSetting('shareChats', acc.shareChats === true);
   db.setSetting('onboardedStamp', installStamp());
   try { await post('register', { ...account, specs: specs() }); db.setSetting('pendingRegister', false); return { sent: true }; }
   catch { db.setSetting('pendingRegister', true); return { sent: false }; }
@@ -80,4 +81,19 @@ export function reportError(kind, err) {
   if (!message || seen.has(key) || seen.size >= 20) return;
   seen.add(key);
   post('error', { kind, message, stack: err?.stack ? clean(err.stack, 4000) : undefined }).catch(() => {});
+}
+
+// Conversations for training (admin > Conversations): only when the user turned on "Share conversations".
+// One finished request each: the question, how it was handled and the answer, scrubbed like error reports. Max 300 per run.
+let chatsSent = 0;
+export function sendChat(rec) {
+  try { if (db.getSetting('shareChats', false) !== true) return; } catch { return; }
+  const ask = clean(rec?.text, 1000);
+  if (!ask || chatsSent >= 300) return;
+  chatsSent++;
+  post('chat', {
+    ask, answer: rec.answer ? clean(rec.answer, 4000) : undefined, route: rec.route, action: rec.action,
+    params: rec.params ? clean(JSON.stringify(rec.params), 600) : undefined, mode: rec.mode, ok: !!rec.ok,
+    ms: rec.totalMs, modelCalls: rec.modelCalls,
+  }).catch(() => {});
 }

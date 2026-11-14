@@ -1,0 +1,17 @@
+{
+  "name": "file_summary",
+  "description": "Count files and total size in a folder, grouped: group = kind|type|month|year|folder (folder = which subfolders take the most space). Same in/kind/ext/name/when/size filters as browse_files.",
+  "triggers": ["space", "how many", "count", "summary", "breakdown", "each", "per", "month", "type"],
+  "params": {
+    "in": { "type": "string", "required": false },
+    "kind": { "type": "enum", "required": false, "values": ["any", "video", "audio", "image", "document", "archive", "program", "code"] },
+    "ext": { "type": "string", "required": false },
+    "name": { "type": "string", "required": false },
+    "when": { "type": "string", "required": false },
+    "size": { "type": "string", "required": false },
+    "group": { "type": "enum", "required": false, "default": "kind", "values": ["kind", "type", "month", "year", "folder"] }
+  },
+  "destructive": false,
+  "needs_ai": false,
+  "native": "file_summary"
+}

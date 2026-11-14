@@ -1,6 +1,6 @@
 {
   "name": "pc",
-  "description": "Built-in PC controls, instant and reliable: volume (set volume to value 0-100), volume_up (louder (value = step, default 10)), volume_down (quieter), mute (mute sound), unmute (unmute sound), play_pause (play/pause music or video), next_track (next song), previous_track (previous song), stop_media (stop music), brightness (screen brightness value 0-100 (laptops)), brightness_up (brighter), brightness_down (dimmer), camera (open the camera), screenshot (take a screenshot, saved to Pictures/Screenshots), snip (snip part of the screen), wifi_on (turn Wi-Fi on), wifi_off (turn Wi-Fi off), bluetooth_on (turn Bluetooth on), bluetooth_off (turn Bluetooth off), dark_mode (Windows dark mode), light_mode (Windows light mode), close_app (close an app (name = app; value 1 = force)), close_all (close all open apps), lock (lock the PC), sleep (put the PC to sleep), hibernate (hibernate the PC), restart (restart the PC), shutdown (shut down the PC), sign_out (sign out of Windows), shutdown_in (shut down in value minutes), restart_in (restart in value minutes), cancel_shutdown (cancel a scheduled shutdown/restart), show_desktop (minimize all windows), task_manager (open Task Manager), control_panel (open Control Panel), device_manager (open Device Manager), file_explorer (open File Explorer), open_settings (open a Settings page (name = settings|display|sound|bluetooth|wifi|network|airplane|battery|power|storage|apps|updates|notifications|default_apps|mouse|keyboard|date_time|privacy|personalization|night_light|camera)), battery (battery level), disk_space (free disk space), memory (RAM use), cpu (CPU use), windows_version (Windows version), uptime (how long the PC has been on), ip_address (IP address), wifi_name (connected Wi-Fi name), empty_recycle_bin (empty the Recycle Bin). Prefer these over commands.",
+  "description": "Built-in PC controls, instant and reliable: volume (set volume to value 0-100), volume_up (louder (value = step, default 10)), volume_down (quieter), mute (mute sound), unmute (unmute sound), play_pause (play/pause music or video), next_track (next song), previous_track (previous song), stop_media (stop music), brightness (screen brightness value 0-100 (laptops)), brightness_up (brighter), brightness_down (dimmer), camera (open the camera), screenshot (take a screenshot, saved to Pictures/Screenshots), snip (snip part of the screen), wifi_on (turn Wi-Fi on), wifi_off (turn Wi-Fi off), bluetooth_on (turn Bluetooth on), bluetooth_off (turn Bluetooth off), dark_mode (Windows dark mode), light_mode (Windows light mode), close_app (close an app (name = app; value 1 = force)), close_all (close all open apps), lock (lock the PC), sleep (put the PC to sleep), hibernate (hibernate the PC), restart (restart the PC), shutdown (shut down the PC), sign_out (sign out of Windows), shutdown_in (shut down in value minutes), restart_in (restart in value minutes), cancel_shutdown (cancel a scheduled shutdown/restart), show_desktop (minimize all windows), task_manager (open Task Manager), control_panel (open Control Panel), device_manager (open Device Manager), file_explorer (open File Explorer), open_settings (open a Settings page (name = settings|display|sound|bluetooth|wifi|network|airplane|battery|power|storage|apps|updates|notifications|default_apps|mouse|keyboard|date_time|privacy|personalization|night_light|camera)), battery (battery level), disk_space (free disk space), memory (RAM use), cpu (CPU use), windows_version (Windows version), uptime (how long the PC has been on), ip_address (IP address), wifi_name (connected Wi-Fi name), empty_recycle_bin (empty the Recycle Bin), clock (current time and date), recycle_bin (open the Recycle Bin), specs (PC specs: CPU, GPU, RAM, Windows), wifi_password (password of the connected Wi-Fi). Prefer these over commands.",
   "triggers": [
     "volume",
     "mute",
@@ -74,7 +74,11 @@
         "uptime",
         "ip_address",
         "wifi_name",
-        "empty_recycle_bin"
+        "empty_recycle_bin",
+        "clock",
+        "recycle_bin",
+        "specs",
+        "wifi_password"
       ]
     },
     "value": {

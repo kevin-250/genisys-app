@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, globalShortcut, screen, Notification, shell, webContents, Tray, Menu, dialog } from 'electron';
+import { app, BrowserWindow, ipcMain, globalShortcut, screen, Notification, shell, webContents, Tray, Menu, dialog, nativeTheme } from 'electron';
 import Anthropic from '@anthropic-ai/sdk';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -10,6 +10,8 @@ import seedKeys from '../default-keys.json';
 import { batName, fixCmd } from './memory.js';
 import { fuzzy } from './fuzzy.js';
 import { makeActions } from './fast/actions.js';
+import { scanFiles, hashSample } from './fast/files.js';
+import { createHash } from 'node:crypto';
 import { loadActions, validateParams, fillTemplate, routerLines, similarPrompt } from './fast/registry.js';
 import { PathIndex, skipDir } from './fast/index.js';
 import { checkScript, isInside } from './fast/safety.js';
@@ -108,7 +110,7 @@ async function checkModels(force) {
 const DB_OPS = ['getSetting', 'setSetting', 'remember', 'findMemory', 'findExact', 'listMemory', 'updateMemory', 'deleteMemory', 'useMemory',
   'listProfile', 'addProfile', 'updateProfile', 'deleteProfile', 'logTask', 'todayStats', 'failsToday',
   'listNotes', 'unseenNotes', 'markNotesSeen', 'deleteNote',
-  'cacheGet', 'cachePut', 'cacheUse', 'cacheDrop', 'cacheCount', 'cacheClear', 'scriptRecord', 'scriptsGood'];
+  'cacheGet', 'cachePut', 'cacheUse', 'cacheDrop', 'cacheCount', 'cacheClear', 'scriptRecord', 'scriptsGood', 'convoAdd', 'convoRecent', 'convoClear'];
 ipcMain.handle('db', (_e, op, ...args) => {
   if (!DB_OPS.includes(op)) throw new Error(`unknown db op ${op}`);
   const r = db[op](...args);
@@ -395,7 +397,8 @@ ipcMain.handle('freeModels', async () => {
 ipcMain.handle('context', (_e, task = '') => {
   const drives = 'CDEFGHIJ'.split('').filter((d) => fs.existsSync(`${d}:\\`)).map((d) => `${d}:`).join(' ');
   const where = ['home', 'desktop', 'documents', 'downloads', 'videos', 'pictures', 'music'].map((k) => `${k}=${app.getPath(k)}`).join('; ');
-  const head = `User: ${os.userInfo().username} on ${os.hostname()}, ${new Date().toString()}\nDrives: ${drives}\nFolders: ${where}`;
+  const prof = browserProfiles('chrome').map((p) => `${p.name} (${p.dir}${p.email ? `, ${p.email}` : ''})`).join('; ');
+  const head = `User: ${os.userInfo().username} on ${os.hostname()}, ${new Date().toString()}\nDrives: ${drives}\nFolders: ${where}${prof ? `\nChrome profiles: ${prof}` : ''}`;
   if (!isFileTask(task)) return head;
   if (!pindex.ready) return `${head}\n${legacyTree()}`;
   const roots = [...new Set([...homeDirs(), path.join(os.homedir(), 'OneDrive'), ...myPaths().roots])].filter((r) => pindex.dirs.has(r));
@@ -444,6 +447,7 @@ ipcMain.handle('timing', (e, op, rec) => {
     try { if (fs.statSync(f).size > 5_000_000) fs.renameSync(f, f.replace(/\.log$/, '.old.log')); } catch {}
     fs.appendFileSync(f, JSON.stringify(line) + '\n');
   } catch (err) { dlog('timing write failed', err.message); }
+  if (rec?.text) cloud.sendChat({ ...line, answer: rec.answer, params: rec.params }); // opt-in, see cloud.js
   return true;
 });
 
@@ -590,6 +594,67 @@ ipcMain.handle('write', (_e, file, content, force) => {
   return { full };
 });
 
+// Settings › About Genisys: everything about this install in one place (versions, where things live and how big they are,
+// the PC, the AI in use, the search index, startup). Read-only; keys are only counted, never shown.
+const sizeOf = (p) => {
+  try {
+    const st = fs.statSync(p);
+    if (!st.isDirectory()) return st.size;
+    let n = 0;
+    for (const e of fs.readdirSync(p, { withFileTypes: true })) n += e.isDirectory() ? sizeOf(path.join(p, e.name)) : (() => { try { return fs.statSync(path.join(p, e.name)).size; } catch { return 0; } })();
+    return n;
+  } catch { return null; }
+};
+ipcMain.handle('appInfo', () => {
+  const ud = userDir(), cfg = readCfg(), own = ownActive();
+  const item = (name, p, what) => ({ name, path: p, what, size: sizeOf(p), exists: fs.existsSync(p) });
+  const debugLog = path.join(os.tmpdir(), 'genisys-debug.log');
+  let runEntry = null;
+  try { runEntry = app.getLoginItemSettings({ path: process.execPath, args: ['--autostart'] }).openAtLogin; } catch {}
+  const safe = (fn, d = null) => { try { return fn(); } catch { return d; } };
+  return {
+    app: {
+      name: 'Genisys', version: app.getVersion(), packaged: app.isPackaged, exe: process.execPath, installDir: path.dirname(process.execPath),
+      electron: process.versions.electron, chrome: process.versions.chrome, node: process.versions.node, v8: process.versions.v8,
+      startedAt: Date.now() - Math.round(process.uptime() * 1000), autostart: db.getSetting('autostart', true), startsWithWindows: runEntry,
+      autoUpdate: db.getSetting('autoUpdate', true) !== false, speedMode: db.getSetting('speedMode', 'new'),
+    },
+    data: {
+      folder: ud,
+      total: sizeOf(ud),
+      files: [
+        item('Settings and keys', path.join(ud, 'config.json'), 'config.json: your API keys, models and own-AI choice'),
+        item('Database', path.join(ud, 'executor.db'), 'executor.db: memory, profile, notes, task log, settings'),
+        item('Your folders index', path.join(ud, 'path-index.json'), 'path-index.json: your user folders, for the AI'),
+        item('Whole-PC index', path.join(ud, 'pc-index.json'), 'pc-index.json: every drive, for /search'),
+        item('PC specs', path.join(ud, 'pc-specs.json'), 'pc-specs.json: Windows, CPU, RAM, screen'),
+        item('Saved commands', path.join(ud, 'bats'), 'bats: tasks that worked, as .bat files'),
+        item('Timing log', path.join(ud, 'timing.log'), 'timing.log: how long each task took'),
+        item('Downloaded updates', path.join(ud, 'updates'), 'updates: installers waiting to be installed'),
+        item('Debug log', debugLog, 'genisys-debug.log (in TEMP): start-up and error log'),
+      ],
+    },
+    system: {
+      windows: `${os.version()} (${os.release()})`, arch: os.arch(), cpu: os.cpus()[0]?.model?.trim() || '', cores: os.cpus().length,
+      ram: os.totalmem(), freeRam: os.freemem(), user: os.userInfo().username, computer: os.hostname(), locale: app.getLocale(),
+      drives: 'CDEFGHIJKLMNOPQRSTUVWXYZ'.split('').filter((d) => fs.existsSync(`${d}:\\`)).map((d) => `${d}:`).join(' '),
+    },
+    ai: {
+      using: own ? `${OWN[own.provider].name} · ${own.model} (your key)` : 'Free models (Groq / Cerebras first, then OpenRouter)',
+      ownKeys: Object.keys(cfg.ownKeys || {}).filter((k) => cfg.ownKeys[k]).map((k) => OWN[k]?.name || k),
+      openrouterKeys: loadConfig().keys.length,
+      fastKeys: Object.fromEntries(Object.entries(cfg.providerKeys || {}).map(([k, v]) => [k, [].concat(v || []).length])),
+    },
+    index: {
+      userEntries: pindex.count, userScanned: pindex.scannedAt || null,
+      pcEntries: pcIndex.count, pcScanned: pcIndex.scannedAt || null, storeApps: storeApps.length,
+    },
+    saved: {
+      memory: safe(() => db.listMemory().length, 0), profile: safe(() => db.listProfile().length, 0), notes: safe(() => db.listNotes().length, 0),
+      cached: safe(() => db.cacheCount(), 0), scripts: safe(() => db.scriptsGood().length, 0),
+    },
+  };
+});
 // Script Writer: the user picks where to save and what to open (Windows' own dialogs). null = cancelled.
 const scriptsHome = () => path.join(os.homedir(), 'scripts');
 ipcMain.handle('saveAs', async (e, name, text, dir) => {
@@ -601,6 +666,11 @@ ipcMain.handle('saveAs', async (e, name, text, dir) => {
   return r.filePath;
 });
 // Open folder: its files for the explorer tree (junk folders like node_modules / .git skipped, capped so huge folders stay fast).
+// Attachments: paths only (the AI works with the file where it is; nothing is read or copied here).
+ipcMain.handle('pickFiles', async (e) => {
+  const r = await dialog.showOpenDialog(BrowserWindow.fromWebContents(e.sender), { title: 'Attach files', properties: ['openFile', 'multiSelections'] });
+  return r.canceled ? [] : r.filePaths;
+});
 ipcMain.handle('openFolderDialog', async (e) => {
   const r = await dialog.showOpenDialog(BrowserWindow.fromWebContents(e.sender), { title: 'Open a folder', defaultPath: scriptsHome(), properties: ['openDirectory'] });
   const root = r.filePaths?.[0];
@@ -789,8 +859,15 @@ ipcMain.handle('trash', async (_e, list) => {
   const out = [];
   for (const raw of [].concat(list || []).slice(0, 200)) {
     const p = path.resolve(os.homedir(), expandEnv(raw));
-    try { await shell.trashItem(p); out.push({ path: p, ok: true }); } catch (e) { out.push({ path: p, ok: false, error: /not found|ENOENT|cannot find/i.test(e.message) ? 'not found' : e.message }); }
+    if (!fs.existsSync(p)) { out.push({ path: p, ok: false, error: 'not found (nothing at that path, so nothing was deleted)' }); continue; }
+    try {
+      await shell.trashItem(p);
+      // never trust the call alone: look at the disk. Only a path that is really gone counts as deleted.
+      if (fs.existsSync(p)) out.push({ path: p, ok: false, error: 'still on disk after the delete (in use or protected)' });
+      else out.push({ path: p, ok: true });
+    } catch (e) { out.push({ path: p, ok: false, error: /not found|ENOENT|cannot find/i.test(e.message) ? 'not found' : e.message }); }
   }
+  refreshIndexSoon(); // the folder tree changed: rescan it in the background
   return out;
 });
 ipcMain.handle('restoreTrash', (_e, query) => new Promise((resolve) => {
@@ -857,6 +934,18 @@ function storeApp(name) {
 }
 const isStoreTarget = (p) => /^shell:AppsFolder\\/i.test(String(p));
 // Start a program (or a Store app) without waiting for it.
+// Browser profiles, read from the browser's own "Local State" file: [{ dir: "Profile 1", name: "Kevin", email: "kevin@gmail.com" }].
+// Opening a link with --profile-directory=<dir> uses that profile's saved sign-ins instead of a fresh, logged-out one.
+const PROFILE_ROOTS = { chrome: ['Google', 'Chrome'], edge: ['Microsoft', 'Edge'], brave: ['BraveSoftware', 'Brave-Browser'] };
+function browserProfiles(browser = 'chrome') {
+  const parts = PROFILE_ROOTS[browser];
+  if (!parts) return [];
+  try {
+    const j = JSON.parse(fs.readFileSync(path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), ...parts, 'User Data', 'Local State'), 'utf8').replace(/^\uFEFF/, ''));
+    const cache = j?.profile?.info_cache || {};
+    return Object.entries(cache).map(([dir, v]) => ({ dir, name: String(v.name || v.gaia_name || dir), email: String(v.user_name || '') }));
+  } catch { return []; }
+}
 function launchTarget(target, args = []) {
   const c = isStoreTarget(target)
     ? spawn('explorer.exe', [target], { detached: true, stdio: 'ignore' })
@@ -916,6 +1005,9 @@ const scanSystem = () => {
   const dir = path.join(process.env.windir || 'C:\\Windows', 'System32');
   try { return fs.readdirSync(dir).filter((n) => /\.exe$/i.test(n)).map((n) => ({ n, l: n.toLowerCase(), p: path.join(dir, n), e: 'exe', t: 'file' })); } catch { return []; }
 };
+// Rescan the folder tree in the background (at most once a minute) so what the index says matches the disk.
+let lastRefresh = 0;
+function refreshIndexSoon() { if (Date.now() - lastRefresh < 60e3) return; lastRefresh = Date.now(); startIndex(true).catch(() => {}); }
 async function startIndex(force, deadline = 0) {
   if (indexBusy) return;
   indexBusy = true;
@@ -1038,6 +1130,17 @@ async function findSmart(opts = {}) {
 const resolveAppFast = (name) => (pindex.ready && pindex.app(name, fs.existsSync)) || resolveApp(name);
 
 // ---- PowerShell runner (templates and AI scripts)
+// Read-only info queries for the PC tables (src/fast/tables.js Q): stdout only, up to 4 MB, JSON parsed when it is JSON.
+function psRead(script, ms = 20000) {
+  return new Promise((resolve) => {
+    const p = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `[Console]::OutputEncoding=[Text.Encoding]::UTF8; ${script}`], { windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
+    let out = '';
+    p.stdout.on('data', (d) => { if (out.length < 4e6) out += d; });
+    const timer = setTimeout(() => { try { p.kill(); } catch {} }, ms);
+    const fin = () => { clearTimeout(timer); const t = out.trim(); try { resolve(/^[[{]/.test(t) ? JSON.parse(t) : t); } catch { resolve(t); } };
+    p.on('error', fin); p.on('close', fin);
+  });
+}
 function runPowerShell(script, ms = 30000) {
   return new Promise((resolve) => {
     const file = path.join(os.tmpdir(), `genisys-${Date.now()}-${Math.random().toString(36).slice(2)}.ps1`);
@@ -1071,11 +1174,27 @@ function getFast() {
     findFiles: findSmart,
     paths,
     exists: (p) => fs.existsSync(p),
+    isDir: (p) => { try { return fs.statSync(p).isDirectory(); } catch { return false; } },
+    scanFiles: (root) => scanFiles(root, fs.promises),
+    refreshIndex: () => refreshIndexSoon(),
+    browserProfiles: (b) => browserProfiles(b),
+    hashOf: (f) => hashSample(f, fs.promises, createHash),
+    sysQuery: (script) => psRead(script),
+    totalRam: os.totalmem(),
     isAllowed: (p) => isInside(p, allowedFolders()),
     mkdirp: (p) => fs.mkdirSync(p, { recursive: true }),
     writeFile: (p, c) => fs.writeFileSync(p, c),
     readFile: (p) => fs.readFileSync(p, 'utf8'),
     listDir: (p) => fs.readdirSync(p, { withFileTypes: true }).map((e) => (e.isDirectory() ? `${e.name}\\` : e.name)),
+    statPath: (p) => { // size of one file, or of a whole folder (capped so a huge drive cannot hang the app)
+      try {
+        const st = fs.statSync(p);
+        if (!st.isDirectory()) return { isDir: false, size: st.size, mtime: st.mtimeMs, birth: st.birthtimeMs };
+        let size = 0, items = 0, seen = 0; const stack = [p];
+        while (stack.length && seen < 200000) for (const e of fs.readdirSync(stack.pop(), { withFileTypes: true })) { seen++; const f = path.join(e.parentPath || e.path, e.name); if (e.isDirectory()) stack.push(f); else { try { size += fs.statSync(f).size; items++; } catch {} } }
+        return { isDir: true, size, items, mtime: st.mtimeMs, birth: st.birthtimeMs };
+      } catch { return null; }
+    },
     copy: (a, b) => fs.cpSync(a, b, { recursive: true, errorOnExist: true, force: false }),
     move: (a, b) => fs.renameSync(a, b),
     trash: (p) => shell.trashItem(p),
@@ -1193,15 +1312,11 @@ const createWindow = (query, pos = {}) => {
     width,
     height,
     ...pos,
-    // Windows 11 acrylic: the page's semi-transparent edge shows the blurred desktop (macOS-style glass).
-    // Transparent + frameless: the page draws its own rounded corners (CSS) and resize grips.
-    // Native rounding: an opaque frameless window gets real rounded corners from Windows 11 itself (DWM), the proven way.
-    // (Transparent windows can silently turn into a sharp square on some Windows builds.)
-    transparent: false,
+    // Frameless + opaque: Windows 11 rounds the window corners natively (roundedCorners) and keeps its shadow and edge resizing.
+    // Not transparent (it breaks native rounding/resizing) and thickFrame is left at its default (true).
     resizable: true,
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#1b1917' : '#f6f3ef',
     roundedCorners: true,
-    backgroundColor: '#1b1917',
-    hasShadow: true,
     icon: path.join(ASSETS, 'icon.png'),
     show: false, // shown by showWhenReady below (an --autostart main window stays hidden)
     // Frameless: our own red/yellow/green dots in #bar replace Windows' min/max/close.
@@ -1209,9 +1324,9 @@ const createWindow = (query, pos = {}) => {
     autoHideMenuBar: true,
     webPreferences: { preload: path.join(__dirname, 'preload.js') },
   });
-  const qs = new URLSearchParams({ ...query, nat: 1 }).toString();
+  const qs = new URLSearchParams(query).toString();
   if (MAIN_WINDOW_VITE_DEV_SERVER_URL) win.loadURL(`${MAIN_WINDOW_VITE_DEV_SERVER_URL}?${qs}`);
-  else win.loadFile(path.join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`), { query: { ...query, nat: 1 } });
+  else win.loadFile(path.join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`), { query });
   if (!(query.mode === 'main' && process.argv.includes('--autostart'))) showWhenReady(win, () => win.show());
   return win;
 };
@@ -1224,7 +1339,7 @@ function toggleRunner() {
   const [w, h] = SIZES.runner;
   runnerWin = new BrowserWindow({
     width: w, height: h, x: Math.round(wa.x + (wa.width - w) / 2), y: wa.y + wa.height - 100 - h,
-    frame: false, transparent: true, hasShadow: false, resizable: false, alwaysOnTop: true, skipTaskbar: true, show: false,
+    frame: false, transparent: true, hasShadow: false, thickFrame: false, roundedCorners: false, resizable: false, alwaysOnTop: true, skipTaskbar: true, show: false,
     icon: path.join(ASSETS, 'icon.png'),
     webPreferences: { preload: path.join(__dirname, 'preload.js') },
   });
@@ -1259,7 +1374,7 @@ function showTodo(st) {
   const w = 330, h = todoWin ? todoWin.getBounds().height : Math.min(460, 150 + (st.rows ?? st.items?.length ?? 0) * 34); // then the page reports its real height
   const bounds = { x: wa.x + wa.width - w - 16, y: wa.y + wa.height - h - 16, width: w, height: h };
   if (!todoWin) {
-    todoWin = new BrowserWindow({ ...bounds, frame: false, transparent: true, hasShadow: false, resizable: false, alwaysOnTop: true, skipTaskbar: true, focusable: false, show: false,
+    todoWin = new BrowserWindow({ ...bounds, frame: false, transparent: true, hasShadow: false, thickFrame: false, roundedCorners: false, resizable: false, alwaysOnTop: true, skipTaskbar: true, focusable: false, show: false,
       icon: path.join(ASSETS, 'icon.png'), webPreferences: { preload: path.join(__dirname, 'preload.js') } });
     const query = { mode: 'todo' };
     const qs = new URLSearchParams(query).toString();

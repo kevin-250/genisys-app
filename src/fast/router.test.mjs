@@ -50,3 +50,10 @@ test('the prompt is small: actions + command only', () => {
   assert.equal(m[1].content, 'open chrome');
   assert.ok(m[0].content.includes('open_app(name:string)') && m[0].content.length < 1500);
 });
+
+test('router prompt: the reference rule appears only when there is a conversation to refer to', () => {
+  const lines = ['browse_files(in?:string) - x'];
+  assert.ok(!buildRouterMessages(lines, 'how large is it')[0].content.includes('REFERENCES:'));
+  const m = buildRouterMessages(lines, 'how large is it', '', 'CONVERSATION SO FAR in this window\n1. user: "x"')[0].content;
+  assert.ok(m.includes('REFERENCES:') && m.includes('file_info'));
+});

@@ -1,0 +1,7 @@
+{
+  "name": "running_apps",
+  "description": "Table of the apps running now, one row per app with memory, CPU time and process count, heaviest first. sort = memory|cpu|name, name = filter, limit = top N. Read-only.",
+  "triggers": ["running", "processes", "memory", "ram", "cpu", "slow", "using"],
+  "params": { "sort": { "type": "enum", "required": false, "values": ["memory", "cpu", "name"] }, "name": { "type": "string", "required": false }, "limit": { "type": "int", "required": false, "min": 1, "max": 500 } },
+  "destructive": false, "needs_ai": false, "native": "running_apps"
+}

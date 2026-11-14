@@ -1,0 +1,20 @@
+{
+  "name": "browse_files",
+  "description": "Show the files in a folder (and all its subfolders) as a table: name, date arrived on this PC, size, folder. Filters: in = videos|downloads|documents|desktop|pictures|music|home, a full path or a folder name; kind; ext like 'pdf,mkv'; name = words in the file name; when = 'today'|'last week'|'october'|'2025'|'last 30 days'|'older than 6 months'; size = 'over 1gb'|'under 10mb'. sort = arrived|modified|size|name|type|folder, order = desc|asc, limit = top N (ALWAYS set it when the user says only/just/top N). show = extra columns the user asked for, from size,folder,type (the table has name + date by default).",
+  "triggers": ["list", "show", "files", "newest", "latest", "oldest", "biggest", "sort", "date", "table"],
+  "params": {
+    "in": { "type": "string", "required": false },
+    "kind": { "type": "enum", "required": false, "values": ["any", "video", "audio", "image", "document", "archive", "program", "code"] },
+    "ext": { "type": "string", "required": false },
+    "name": { "type": "string", "required": false },
+    "when": { "type": "string", "required": false },
+    "size": { "type": "string", "required": false },
+    "sort": { "type": "enum", "required": false, "values": ["arrived", "modified", "size", "name", "type", "folder"] },
+    "order": { "type": "enum", "required": false, "values": ["desc", "asc"] },
+    "limit": { "type": "int", "required": false, "min": 1, "max": 2000 },
+    "show": { "type": "string", "required": false }
+  },
+  "destructive": false,
+  "needs_ai": false,
+  "native": "browse_files"
+}

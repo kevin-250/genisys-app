@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
 
 contextBridge.exposeInMainWorld('api', {
   pageReady: () => ipcRenderer.send('pageReady'),
@@ -61,9 +61,12 @@ contextBridge.exposeInMainWorld('api', {
   write: (file, content, force) => ipcRenderer.invoke('write', file, content, force),
   readText: (file) => ipcRenderer.invoke('readText', file),
   ownAI: (op, args) => ipcRenderer.invoke('ownAI', op, args),
+  appInfo: () => ipcRenderer.invoke('appInfo'),
   saveAs: (name, text, dir) => ipcRenderer.invoke('saveAs', name, text, dir),
   openFolderDialog: () => ipcRenderer.invoke('openFolderDialog'),
   openFileDialog: () => ipcRenderer.invoke('openFileDialog'),
+  pickFiles: () => ipcRenderer.invoke('pickFiles'),
+  filePath: (file) => webUtils.getPathForFile(file), // a dropped File -> its path on disk
   // fast path (Stages 3-10)
   fast: (action, params, confirmed) => ipcRenderer.invoke('fast', action, params, confirmed),
   fastValid: (action, params) => ipcRenderer.invoke('fastValid', action, params),

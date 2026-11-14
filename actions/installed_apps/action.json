@@ -1,0 +1,7 @@
+{
+  "name": "installed_apps",
+  "description": "Table of the installed apps (Programs and Features): name, version, publisher, install date, size. sort = name|size|date, name = filter, limit = top N. Read-only.",
+  "triggers": ["installed", "programs", "software", "apps"],
+  "params": { "sort": { "type": "enum", "required": false, "values": ["name", "size", "date"] }, "name": { "type": "string", "required": false }, "limit": { "type": "int", "required": false, "min": 1, "max": 2000 } },
+  "destructive": false, "needs_ai": false, "native": "installed_apps"
+}

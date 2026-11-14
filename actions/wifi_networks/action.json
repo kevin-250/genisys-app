@@ -1,0 +1,7 @@
+{
+  "name": "wifi_networks",
+  "description": "Table of the Wi-Fi networks nearby: name, signal, band, security, strongest first. Read-only.",
+  "triggers": ["wifi", "wireless", "networks"],
+  "params": {},
+  "destructive": false, "needs_ai": false, "native": "wifi_networks"
+}

@@ -12,6 +12,8 @@ export function openDb(file) {
     CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY, ts INTEGER, kind TEXT, text TEXT, seen INTEGER DEFAULT 0);
     CREATE TABLE IF NOT EXISTS settings (k TEXT PRIMARY KEY, v TEXT);
     CREATE TABLE IF NOT EXISTS cmd_cache (key TEXT PRIMARY KEY, action TEXT, params TEXT, uses INTEGER DEFAULT 1, last_used INTEGER);
+    CREATE TABLE IF NOT EXISTS convo (id INTEGER PRIMARY KEY, cid TEXT, ts INTEGER, task TEXT, route TEXT, action TEXT, params TEXT, say TEXT, rows TEXT);
+    CREATE INDEX IF NOT EXISTS convo_cid ON convo (cid, ts);
     CREATE TABLE IF NOT EXISTS scripts (hash TEXT PRIMARY KEY, command TEXT, script TEXT, runs INTEGER DEFAULT 0, ok_runs INTEGER DEFAULT 0, last_used INTEGER);
   `);
 }
@@ -88,3 +90,15 @@ export const cacheClear = () => { const n = cacheCount(); run('DELETE FROM cmd_c
 export const scriptRecord = (hash, command, script, ok) => run(`INSERT INTO scripts (hash, command, script, runs, ok_runs, last_used) VALUES (?, ?, ?, 1, ?, ?)
   ON CONFLICT(hash) DO UPDATE SET runs = runs + 1, ok_runs = ok_runs + excluded.ok_runs, last_used = excluded.last_used`, hash, command, script, ok ? 1 : 0, Date.now());
 export const scriptsGood = () => all('SELECT * FROM scripts WHERE ok_runs >= 2 ORDER BY ok_runs DESC, last_used DESC LIMIT 50');
+
+// Conversation memory (convo.js): every turn of a window, so a follow-up ("how large is it") still knows what "it" was.
+// cid = which window ("main", "agent-3"). Only the last 200 turns per window and 30 days are kept.
+export function convoAdd(cid, t) {
+  run('INSERT INTO convo (cid, ts, task, route, action, params, say, rows) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    String(cid), t.ts || Date.now(), t.task, t.route || '', t.action || '', JSON.stringify(t.params || {}), t.say || '', JSON.stringify(t.rows || []));
+  run('DELETE FROM convo WHERE cid = ? AND id NOT IN (SELECT id FROM convo WHERE cid = ? ORDER BY id DESC LIMIT 200)', String(cid), String(cid));
+  run('DELETE FROM convo WHERE ts < ?', Date.now() - 30 * 86400000);
+}
+export const convoRecent = (cid, limit = 12, since = 0) => all('SELECT * FROM (SELECT * FROM convo WHERE cid = ? AND ts >= ? ORDER BY id DESC LIMIT ?) ORDER BY id', String(cid), since, limit)
+  .map((r) => ({ ...r, params: JSON.parse(r.params || '{}'), rows: JSON.parse(r.rows || '[]') }));
+export const convoClear = (cid) => run('DELETE FROM convo WHERE cid = ?', String(cid));

@@ -142,3 +142,28 @@ test('folder map only on the first step', () => {
 test('router never guesses a left-out detail', () => {
   assert.match(buildRouterMessages([], 'x')[0].content, /Never fill in a detail/);
 });
+
+test('trained phrasings (Nov 2026) reach the right control', () => {
+  assert.deepEqual(p('increase volume'), { do: 'volume_up' });
+  assert.deepEqual(p('turn down the volume'), { do: 'volume_down' });
+  assert.deepEqual(p('max volume'), { do: 'volume', value: 100 });
+  assert.deepEqual(p('set volume at 80 percent'), { do: 'volume', value: 80 });
+  assert.deepEqual(p('open recycle bin'), { do: 'recycle_bin' });
+  assert.deepEqual(p('open my computer'), { do: 'file_explorer' });
+  assert.deepEqual(p('kill all chrome processes'), { do: 'close_app', name: 'chrome', value: 1 });
+  assert.equal(p('close chrome and open edge'), null);
+  assert.equal(p('close all tabs'), null);
+  assert.deepEqual(p('what time is it'), { do: 'clock' });
+  assert.deepEqual(p('todays date'), { do: 'clock' });
+  assert.deepEqual(p('check for updates'), { do: 'open_settings', name: 'updates' });
+  assert.deepEqual(p('open windows settings'), { do: 'open_settings', name: 'settings' });
+  assert.deepEqual(p('change wallpaper'), { do: 'open_settings', name: 'personalization' });
+  assert.deepEqual(p('switch off computer'), { do: 'shutdown' }); // parseIntent drops "the" before parseSystem runs
+  assert.deepEqual(p('sign out of windows'), { do: 'sign_out' });
+  assert.deepEqual(p('what gpu do i have'), { do: 'specs' });
+  assert.deepEqual(p('what windows do i have'), { do: 'windows_version' });
+  assert.deepEqual(p('am i charging'), { do: 'battery' });
+  assert.deepEqual(p('how much storage do i have left'), { do: 'disk_space' });
+  assert.deepEqual(p('whats my wifi password'), { do: 'wifi_password' });
+  assert.equal(p('info'), null);
+});

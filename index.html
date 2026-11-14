@@ -327,10 +327,10 @@
       html:has(body.m-runner), body.m-runner { background: transparent !important; }
       body.m-runner { padding: 10px; justify-content: flex-end; overflow: hidden; }
       body.m-runner #bar, body.m-runner .hints, body.m-runner #agents, body.m-runner #host, body.m-runner .logo { display: none !important; }
-      body.m-runner .card { position: relative; flex: 0 1 auto; min-height: 0; margin: 0; border: 0; border-radius: 14px; background: var(--solid); overflow: hidden;
-        box-shadow: 0 16px 44px rgba(0, 0, 0, 0.5); animation: runner-in .18s ease-out; }
+      body.m-runner .card { position: relative; flex: 0 1 auto; min-height: 0; margin: 0; border: 0; border-radius: 24px; background: var(--solid); overflow: hidden;
+        animation: runner-in .18s ease-out; } /* no drop shadow: it smudges light backgrounds */
       body.m-runner.open .card { flex: 1 1 auto; }
-      body.m-runner .card::after { content: ''; position: absolute; inset: 0; z-index: 5; pointer-events: none; border-radius: 14px; padding: 2px;
+      body.m-runner .card::after { content: ''; position: absolute; inset: 0; z-index: 5; pointer-events: none; border-radius: 24px; padding: 2px;
         background: linear-gradient(135deg, var(--e1), var(--e2) 22%, var(--e3) 48%, var(--e2) 74%, var(--e1));
         -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask-composite: exclude; }
       body.m-runner:not(.open) .head, body.m-runner:not(.open) .log { display: none; }
@@ -340,15 +340,10 @@
       #r-close { display: none; margin-left: 8px; width: 24px; } body.m-runner #r-close { display: grid; }
       @keyframes runner-in { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
 
-      /* Rounded window: the window itself is transparent; the page supplies the shape and resize grips. */
-      html { background: transparent !important; }
-      body:not(.m-runner) { border-radius: 14px; overflow: hidden; clip-path: inset(0 round 14px); }
-      html.maxed body:not(.m-runner) { clip-path: none; }
-      body:not(.m-runner)::before, body:not(.m-runner)::after { border-radius: 14px; }
-      /* Native rounded window (Windows draws the corners): no CSS clipping, or the two roundings would fight. */
-      html.native body:not(.m-runner) { border-radius: 0; clip-path: none; }
-      html.native body:not(.m-runner)::before, html.native body:not(.m-runner)::after { border-radius: 8px; }
-      html.maxed body:not(.m-runner), html.maxed body:not(.m-runner)::before, html.maxed body:not(.m-runner)::after { border-radius: 0; }
+      /* Main/agent/script windows are rounded natively by Windows 11. Only the runner and plan windows are still transparent and page-rounded. */
+      html { --win-r: 32px; }
+      html:has(body.m-runner) { background: transparent !important; }
+      body.m-todo { clip-path: inset(0 round var(--win-r)); }
       .grip { position: fixed; z-index: 60; -webkit-app-region: no-drag; }
       body.m-runner .grip { display: none; }
       html.maxed .grip { display: none; }
@@ -359,7 +354,7 @@
       /* ===== Light mode: visible rounded edge (a white edge vanished against light desktops) ===== */
       [data-theme='light'] { --e1: rgba(105, 118, 138, 0.8); --e2: rgba(150, 165, 188, 0.55); --e3: rgba(205, 213, 226, 0.7); }
       [data-theme='light'] body:not(.m-runner)::before { box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.9); }
-      [data-theme='light'] body.m-runner .card { box-shadow: 0 16px 44px rgba(20, 30, 50, 0.3), 0 0 0 1px rgba(0, 0, 0, 0.12); }
+      [data-theme='light'] body.m-runner .card { box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.12); }
 
       /* ===== Stop button: the send button turns into a pulsing stop button while the agent works ===== */
       #form.busy #send { background: linear-gradient(160deg, #ff8a80, var(--red)); border-color: color-mix(in srgb, var(--red) 70%, white); color: #fff;
@@ -442,7 +437,7 @@
       html:has(body.m-todo), body.m-todo { background: transparent !important; }
       body.m-todo { padding: 8px; border-radius: 0; overflow: hidden; display: block; height: auto; }
       body.m-todo::before, body.m-todo::after { display: none; }
-      .td { display: flex; flex-direction: column; gap: 10px; padding: 14px 16px 12px; border: 1px solid color-mix(in srgb, var(--text) 12%, transparent); border-radius: 18px; color: var(--text);
+      .td { display: flex; flex-direction: column; gap: 10px; padding: 14px 16px 12px; border: 1px solid color-mix(in srgb, var(--text) 12%, transparent); border-radius: var(--win-r); color: var(--text);
         background: var(--solid); box-shadow: 0 16px 40px rgba(0, 0, 0, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.06); font-family: var(--ui); animation: runner-in .22s ease-out; }
       .td-head { display: flex; align-items: center; gap: 8px; }
       .td-head img { width: 20px; height: 20px; }
@@ -595,7 +590,7 @@
       .pane { padding: 22px 30px 30px; }
       .pane::before { display: block; margin: 0 0 20px; font: 700 19px/1.2 var(--ui); color: var(--text); }
       #tab-settings::before { content: 'Settings'; } #tab-keys::before { content: 'Keys'; } #tab-memory::before { content: 'Command memory'; }
-      #tab-about::before { content: 'About you'; } #tab-notes::before { content: 'Notes'; } #tab-report::before { content: 'Report to the developer'; }
+      #tab-about::before { content: 'About you'; } #tab-app::before { content: 'About Genisys'; } #tab-notes::before { content: 'Notes'; } #tab-report::before { content: 'Report to the developer'; }
       .report { display: flex; flex-direction: column; gap: 14px; max-width: 640px; }
       .report .desc { margin: 0; color: var(--muted); }
       .report .seg { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -663,7 +658,7 @@
 
       body:not(.m-runner) .foot { position: relative; margin: 6px 14px 14px; padding: 12px 14px 10px; border: 1px solid color-mix(in srgb, var(--text) 12%, transparent); border-radius: 18px; background: color-mix(in srgb, var(--text) 4.5%, transparent); transition: border-color .2s, box-shadow .2s; }
       body:not(.m-runner) .foot:focus-within { border-color: color-mix(in srgb, var(--accent) 45%, transparent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent); }
-      body.m-agent:not(.m-runner) .foot { margin: 4px 8px 8px; padding: 9px 12px 8px; border-radius: 14px; }
+      body.m-agent:not(.m-runner) .foot { margin: 4px 8px 8px; padding: 9px 12px 8px; border-radius: 16px; }
       #form { align-items: flex-start; padding-right: 40px; min-height: 34px; }
       body #send { position: absolute; right: 12px; bottom: 10px; width: 32px; height: 32px; border: 0; border-radius: 50%; background: color-mix(in srgb, var(--text) 16%, transparent); color: var(--text); box-shadow: none; }
       body #send svg { width: 17px; height: 17px; margin: 0; stroke-width: 2.3; }
@@ -682,8 +677,39 @@
       body.m-runner #form { padding-right: 0; align-items: center; }
       body.m-runner #send { right: 16px; bottom: 50%; transform: translateY(50%); width: 34px; height: 34px; }
       body.m-runner #send:hover { transform: translateY(50%); }
-      body.m-runner .card { border-radius: 18px; } body.m-runner .card::after { border-radius: 18px; }
+      body.m-runner .card { border-radius: var(--win-r); } body.m-runner .card::after { border-radius: var(--win-r); }
       body.m-runner .row.user .txt { font-size: 13px; }
+
+      /* Message scroller: "Jump to latest" pill above the input while you read back */
+      .jump { position: absolute; left: 0; right: 0; width: max-content; margin: 0 auto; bottom: calc(100% + 8px); z-index: 4; display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 12px 0 9px;
+        border: 1px solid color-mix(in srgb, var(--text) 12%, transparent); border-radius: 999px; background: var(--solid); color: var(--text); font: 600 12px var(--ui); cursor: pointer;
+        box-shadow: 0 6px 18px rgba(0, 0, 0, 0.22); animation: live-in .18s ease-out; }
+      .jump:hover { background: color-mix(in srgb, var(--text) 10%, var(--solid)); }
+      .jump svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+      .jump[hidden] { display: none; }
+
+      /* Attachments: file chips above the input, and inside the sent message */
+      .atts { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 40px 8px 0; } .atts[hidden] { display: none; }
+      .att { display: inline-flex; align-items: center; gap: 6px; max-width: 220px; height: 26px; padding: 0 4px 0 8px; border-radius: 999px;
+        background: color-mix(in srgb, var(--text) 8%, transparent); color: var(--text); font: 500 11.5px var(--ui); }
+      .att svg { width: 13px; height: 13px; flex: none; fill: none; stroke: var(--muted); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+      .att span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .att button { display: grid; place-items: center; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 50%; background: none; color: var(--muted); font-size: 9px; cursor: pointer; }
+      .att button:hover { background: color-mix(in srgb, var(--text) 14%, transparent); color: var(--text); }
+      .row.user .txt .atts { margin: 6px 0 0; } .row.user .txt .att { padding-right: 10px; background: color-mix(in srgb, var(--text) 9%, transparent); }
+      .foot.drop { border-color: var(--accent) !important; box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent) !important; }
+
+      /* Tool: one call, closed to its name + status; opens onto Parameters and Result */
+      .tool { margin: 6px 0 4px; border: 1px solid var(--line2); border-radius: 12px; background: var(--code); overflow: hidden; font-family: var(--ui); }
+      .tool-h { display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 10px; border: 0; background: none; color: var(--text); font: 600 12px var(--ui); text-align: left; cursor: pointer; }
+      .tool-h svg { width: 14px; height: 14px; flex: none; fill: none; stroke: var(--muted); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+      .tool-h .tool-n { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-weight: 500; }
+      .tool-s { flex: none; padding: 1px 8px; border-radius: 999px; font-size: 10.5px; font-weight: 600; background: color-mix(in srgb, var(--green) 16%, transparent); color: var(--green); }
+      .tool.bad .tool-s { background: color-mix(in srgb, var(--red) 16%, transparent); color: var(--red); }
+      .tool .chev { flex: none; width: 7px; height: 7px; border: solid var(--muted); border-width: 0 1.6px 1.6px 0; transform: rotate(-45deg); transition: transform .25s; margin: 0 3px; } .tool.open .tool-h .chev { transform: rotate(45deg); }
+      .tool-b { display: none; padding: 0 10px 8px; border-top: 1px solid var(--line); } .tool.open .tool-b { display: block; }
+      .tool-l { display: block; margin: 8px 0 2px; color: var(--muted); font-size: 10.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
+      .tool-b .cb { margin: 2px 0 0; }
 
       #newchat { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 12px 0 9px; border: 0; border-radius: 999px; cursor: pointer; -webkit-app-region: no-drag;
         background: color-mix(in srgb, var(--text) 8%, transparent); color: var(--text); font: 600 12px var(--ui); transition: background .15s, transform .12s; }
@@ -812,6 +838,24 @@
       .cite-row { display: flex; flex-wrap: wrap; gap: 5px; }
 
       /* ===== Changed files (commit-style card) ===== */
+      .dt { margin: 8px 0; border: 1px solid var(--line2); border-radius: 12px; background: var(--code); font-family: var(--ui); overflow: hidden; white-space: normal; }
+      .dt-h { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+      .dt-t { flex: 1; min-width: 0; font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .dt-f { width: 140px; padding: 4px 8px; border: 1px solid var(--line2); border-radius: 7px; background: var(--panel); color: var(--text); font: 12px var(--ui); }
+      .dt-f:focus-visible, .dt-copy:focus-visible, .dt th button:focus-visible, .dt tr.go:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+      .dt-copy { display: grid; place-items: center; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 6px; background: none; color: var(--muted); cursor: pointer; }
+      .dt-copy svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; }
+      .dt-w { max-height: 360px; overflow: auto; }
+      .dt table { width: 100%; border-collapse: collapse; font-size: 12px; }
+      .dt th { position: sticky; top: 0; background: var(--head); text-align: left; border-bottom: 1px solid var(--line); }
+      .dt th button { width: 100%; padding: 6px 10px; border: 0; background: none; color: var(--muted); font: 600 12px var(--ui); text-align: left; cursor: pointer; white-space: nowrap; }
+      .dt th[aria-sort=ascending] button::after { content: ' ↑'; } .dt th[aria-sort=descending] button::after { content: ' ↓'; }
+      .dt td { padding: 5px 10px; border-bottom: 1px solid var(--line); color: var(--text); max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .dt tr.go { cursor: pointer; } .dt tr.go:hover td { background: var(--accent-soft); }
+      .dt-n { padding: 6px 10px; font-size: 11px; color: var(--dim); }
+      .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; margin: 8px 0; white-space: normal; }
+      .stat { display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; border: 1px solid var(--line2); border-radius: 10px; background: var(--code); font-family: var(--ui); }
+      .st-l { font-size: 11px; color: var(--muted); } .st-v { font-size: 18px; color: var(--text); } .st-n { font-size: 11px; color: var(--dim); }
       .commit { margin: 8px 0; border: 1px solid var(--line2); border-radius: 12px; background: var(--code); font-family: var(--ui); overflow: hidden; }
       .cm-h { display: flex; align-items: center; }
       .cm-t { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 9px 12px; border: 0; background: none; color: var(--text); text-align: left; cursor: pointer; position: relative; }
@@ -929,6 +973,25 @@
       #panel .sheet > :not(#tabs) { min-width: 0; overflow: auto; }
       @media (prefers-reduced-motion: reduce) { #panel, #panel .sheet { animation: none; } }
 
+      /* Settings › About Genisys */
+      .ab-head { display: flex; align-items: center; gap: 14px; padding: 16px; margin-bottom: 6px; border-radius: 16px; background: color-mix(in srgb, var(--text) 5%, transparent); }
+      .ab-logo { width: 52px; height: 52px; border-radius: 13px; }
+      .ab-id { flex: 1; display: flex; flex-direction: column; gap: 2px; } .ab-id b { font: 700 18px var(--ui); } .ab-id span { color: var(--muted); font: 13px var(--ui); }
+      .ab-upd { display: block; min-height: 18px; margin: 0 4px 12px; font: 12.5px var(--ui); }
+      .ab-links { display: flex; flex-wrap: wrap; gap: 10px; }
+      .ab-link { display: flex; align-items: center; gap: 10px; padding: 9px 14px 9px 10px; border: 1px solid var(--line2); border-radius: 12px; background: none; color: var(--text); cursor: pointer; text-align: left; font-family: var(--ui); }
+      .ab-link:hover { border-color: var(--accent); background: color-mix(in srgb, var(--text) 5%, transparent); }
+      .ab-link svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+      .ab-link span { display: flex; flex-direction: column; } .ab-link b { font-size: 13px; } .ab-link small { color: var(--muted); font-size: 12px; }
+      .ab-kv { display: grid; grid-template-columns: minmax(130px, max-content) 1fr; gap: 7px 18px; font: 13px var(--ui); }
+      .ab-k { color: var(--muted); } .ab-v { color: var(--text); min-width: 0; overflow-wrap: anywhere; user-select: text; }
+      .ab-datah { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; font: 13px var(--ui); } .ab-datah .ab-v { flex: 1; font-family: var(--font); font-size: 12.5px; }
+      .ab-files { display: flex; flex-direction: column; }
+      .ab-file { display: grid; grid-template-columns: 160px 90px 1fr auto; align-items: center; gap: 12px; padding: 7px 0; border-top: 1px solid var(--line); font: 13px var(--ui); }
+      .ab-file.none { opacity: .55; } .ab-fn { font-weight: 600; } .ab-fs { color: var(--muted); font-variant-numeric: tabular-nums; } .ab-fw { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .ab-file .btn { padding: 2px 10px; font-size: 12px; }
+      .ab-bar { display: flex; align-items: center; gap: 12px; margin-top: 4px; font: 13px var(--ui); }
+
       /* "your own AI" in Settings › Keys */
       .own { display: flex; flex-direction: column; gap: 10px; }
       .own-now { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 12px; background: color-mix(in srgb, var(--text) 5%, transparent); font: 13px var(--ui); }
@@ -940,12 +1003,59 @@
       .own-f > .field[hidden], .own-row > [hidden], .own-get[hidden] { display: none; }
       .own-get { justify-self: start; font: 12px var(--ui); color: var(--muted); text-decoration: none; } .own-get:hover { color: var(--text); text-decoration: underline; }
       .own-msg { min-height: 18px; font: 12.5px var(--ui); color: var(--muted); } .own-msg.ok { color: var(--green); } .own-msg.bad { color: var(--red); }
+
+      /* ===== AI Elements look (shadcn): outlined items, small buttons, muted descriptions, pill suggestions, trace lines =====
+         Same colours and fonts as before (every colour is a theme variable, so dark and light both follow). Only the shapes changed. */
+      /* Confirmation + Question: one outlined item = icon, title, description, then the actions */
+      .confirm, .qcard { display: flex; align-items: center; gap: 12px; margin: 8px 0; padding: 10px 12px; border: 1px solid var(--line2); border-radius: 10px; background: transparent; font-family: var(--ui); animation: live-in .2s ease-out; }
+      .qcard { align-items: flex-start; }
+      .confirm.danger { border-color: color-mix(in srgb, var(--red) 45%, var(--line2)); background: color-mix(in srgb, var(--red) 5%, transparent); }
+      .cf-ic { width: auto; height: auto; border-radius: 0; background: none; color: var(--muted); align-self: flex-start; margin-top: 2px; }
+      .confirm.danger .cf-ic { color: var(--red); background: none; }
+      .cf-c { gap: 3px; } .cf-c b { font-size: 13px; font-weight: 600; letter-spacing: 0; line-height: 1.35; }
+      .cf-d { font-size: 12px; line-height: 1.45; }
+      .cf-code { margin-top: 3px; padding: 6px 10px; border-radius: 8px; background: var(--code); }
+      .cf-a { gap: 6px; align-self: center; }
+      .cf-a button.btn { height: 28px; padding: 0 13px; border-radius: 8px; font: 500 12px var(--ui); letter-spacing: 0; }
+      .cf-a button.cf-no { background: transparent; color: var(--text); }
+      .cf-a button.cf-no:hover { background: var(--hl); border-color: var(--muted); color: var(--text); box-shadow: none; }
+      .confirm.danger .cf-yes { background: var(--red); border-color: var(--red); color: #fff; }
+      button.cf-yes:focus-visible, button.cf-no:focus-visible, .q-opt:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+      .cf-done { gap: 8px; margin: 2px 0 6px; font-size: 12px; } .cf-done span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .cf-done.ask svg { color: var(--muted); }
+      /* Suggestion pills = the likely answers to a question */
+      .q-opts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+      .q-opt { height: 28px; padding: 0 13px; border: 1px solid var(--line2); border-radius: 999px; background: transparent; color: var(--text); font: 500 12px var(--ui); cursor: pointer; transition: background .15s, border-color .15s; }
+      .q-opt:hover { background: var(--hl); border-color: var(--muted); }
+      .q-opt:active { transform: translateY(1px); }
+      .q-hint { margin-top: 4px; font-size: 11px; color: var(--dim); }
+      .row.ask .txt { padding: 8px 12px; border: 1px solid var(--line2); border-radius: 10px; background: transparent; color: var(--text); }
+      .ask .lbl { color: var(--muted); font-weight: 500; }
+      /* Trace lines: what it ran, what it printed, how it ended */
+      .cmd .lbl, .out .lbl, .done .lbl { padding: 0; border-radius: 0; background: none; color: var(--dim); font-size: 12px; font-weight: 400; line-height: inherit; }
+      .cmd .txt { position: relative; padding: 5px 10px 5px 31px; border: 1px solid var(--line2); border-left-width: 1px; border-radius: 8px; background: transparent; font-size: 12px; }
+      .cmd .txt::before, .done .txt::before { content: ''; position: absolute; left: 10px; top: 50%; width: 14px; height: 14px; transform: translateY(-50%); background: var(--muted); -webkit-mask: var(--ic) center / contain no-repeat; mask: var(--ic) center / contain no-repeat; }
+      .cmd .txt { --ic: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m5 8 4 4-4 4M12 17h7'/%3E%3C/svg%3E"); }
+      .out .txt { padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--code); color: var(--text); opacity: .9; font-size: 11.5px; }
+      .done .txt { position: relative; display: inline-block; padding: 0 0 0 20px; border-radius: 0; background: none; color: var(--muted); font-size: 12px; --ic: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m5 12 5 5 9-10'/%3E%3C/svg%3E"); }
+      .done .txt::before { left: 0; background: var(--green); }
+      .err .txt { border: 1px solid color-mix(in srgb, var(--red) 38%, var(--line2)); border-radius: 8px; background: color-mix(in srgb, var(--red) 6%, transparent); }
+      .warn .txt { padding: 6px 10px; border: 1px solid color-mix(in srgb, var(--amber) 38%, var(--line2)); border-radius: 8px; background: color-mix(in srgb, var(--amber) 6%, transparent); }
+      /* Tool call + sources: outlined, status as a small dot badge */
+      .tool { border-radius: 10px; background: transparent; }
+      .tool-h:hover { background: var(--hl); }
+      .tool-s { display: inline-flex; align-items: center; gap: 5px; border: 1px solid color-mix(in srgb, var(--green) 40%, var(--line2)); background: transparent; font-weight: 500; }
+      .tool-s::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+      .tool.bad .tool-s { border-color: color-mix(in srgb, var(--red) 45%, var(--line2)); background: transparent; }
+      .cite-b { padding: 0 9px; border: 1px solid var(--line2); background: transparent; font-weight: 500; line-height: 20px; }
+      .cite-b:hover, .cite-b:focus-visible { background: var(--hl); border-color: var(--muted); }
+      @media (prefers-reduced-motion: reduce) { .confirm, .qcard { animation: none; } .q-opt { transition: none; } }
     </style>
   </head>
   <body>
     <!-- First-paint fix: set the window's mode classes + theme BEFORE anything paints (app.js adds the same ones later, harmless).
          Its sha256 is whitelisted in the CSP above: if you change the script, recompute the hash. -->
-    <script>(function(){try{var q=new URLSearchParams(location.search),m=q.get('mode')||'main';if(!/^(main|agent|script|runner)$/.test(m))return;var d=document.documentElement,b=document.body;if(q.get('nat'))d.classList.add('native');var st=m==='main'?localStorage:sessionStorage,t=null;try{t=st.getItem('theme')||(m==='main'?null:localStorage.getItem('theme'))}catch(e){}d.dataset.theme=t||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');b.classList.add(m==='main'?'main':'agent','m-'+m)}catch(e){}})();</script>
+    <script>(function(){try{var q=new URLSearchParams(location.search),m=q.get('mode')||'main';if(!/^(main|agent|script|runner)$/.test(m))return;var d=document.documentElement,b=document.body;var st=m==='main'?localStorage:sessionStorage,t=null;try{t=st.getItem('theme')||(m==='main'?null:localStorage.getItem('theme'))}catch(e){}d.dataset.theme=t||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');b.classList.add(m==='main'?'main':'agent','m-'+m)}catch(e){}})();</script>
     <div id="bar">
       <span class="dots"><i class="red" id="w-close" title="Close"></i><i class="yellow" id="w-min" title="Minimize"></i><i class="green" id="w-max" title="Maximize"></i></span>
       <span id="wtitle">genisys</span>
@@ -978,6 +1088,7 @@
         <div class="hints">
           <button type="button" id="add" class="hint main-only" title="New agent window"><svg viewBox="0 0 24 24" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="4"/><path d="M8 12h8"/><path d="M12 8v8"/></svg><span>New agent</span><span class="kk"><kbd>Ctrl</kbd><kbd>Alt</kbd><kbd>N</kbd></span></button>
           <button type="button" id="script" class="hint main-only" title="Script writer"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>Script writer</span><span class="kk"><kbd>Ctrl</kbd><kbd>Alt</kbd><kbd>S</kbd></span></button>
+          <button type="button" id="attach" class="hint main-only" title="Attach files (or drop them on the window)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m21 11-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l8.6-8.6a3.7 3.7 0 0 1 5.2 5.2l-8.6 8.6a1.8 1.8 0 0 1-2.6-2.6L15 6.6"/></svg><span>Attach</span></button>
           <button type="button" id="slashbtn" class="hint" title="Actions: agents, browser, script, search (type / in the box)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 3 8 21"/></svg><span>Actions</span><span class="kk"><kbd>/</kbd></span></button>
           <button type="button" id="stop" class="hint" title="Stop the running task"><svg viewBox="0 0 24 24" aria-hidden="true"><rect width="12" height="12" x="6" y="6" rx="2"/></svg><span>Stop</span><span class="kk"><kbd>Esc</kbd></span></button>
           <button type="button" id="help-btn" class="hint" title="Shortcuts and help"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.6V14"/><path d="M12 17.5v.01"/></svg><span>Help</span><span class="kk"><kbd>F1</kbd></span></button>
@@ -991,6 +1102,7 @@
         <button data-tab="memory"><svg viewBox="0 0 24 24"><path d="M4 6c0-1.7 3.6-3 8-3s8 1.3 8 3-3.6 3-8 3-8-1.3-8-3zM4 6v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg><span>Memory</span></button>
         <button data-tab="about"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg><span>About you</span></button>
         <button data-tab="notes"><svg viewBox="0 0 24 24"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 8 3 8H3s3-1 3-8M10 20a2 2 0 0 0 4 0"/></svg><span>Notes</span></button>
+        <button data-tab="app"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.01"/></svg><span>About Genisys</span></button>
         <button data-tab="report"><svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M8 9h8M8 13h5"/></svg><span>Report</span></button>
         <button id="panel-x" title="Close (Esc)"><svg viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
       </nav>
@@ -999,6 +1111,7 @@
       <section id="tab-memory" class="tab pane"></section>
       <section id="tab-about" class="tab pane"></section>
       <section id="tab-notes" class="tab pane"></section>
+      <section id="tab-app" class="tab pane"></section>
       <section id="tab-report" class="tab pane"></section>
     </div></div>
     <div id="help"><div class="box">

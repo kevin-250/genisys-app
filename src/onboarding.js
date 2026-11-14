@@ -13,7 +13,7 @@ const applyTheme = (t) => {
 };
 
 export function startOnboarding() {
-  const d = { email: '', name: '', theme: 'light', sendErrors: true, autostart: true, sent: true };
+  const d = { email: '', name: '', theme: 'light', sendErrors: true, shareChats: false, autostart: true, sent: true };
   let step = 0, busy = false;
 
   const root = document.createElement('div');
@@ -81,8 +81,9 @@ export function startOnboarding() {
       },
     },
     { // 4 · settings
-      html: () => `${head('', 'Two quick settings', 'Change them later in Settings.')}
+      html: () => `${head('', 'Quick settings', 'Change them later in Settings.')}
         ${[['sendErrors', 'Send error reports', 'When something breaks, send the error message and app version so it gets fixed. Your user folder and name are removed first.'],
+           ['shareChats', 'Share conversations', 'Send what you ask and what Genisys answers so it learns what to get better at. No files or passwords; your folder and name are removed.'],
            ['autostart', 'Start with Windows', 'Genisys waits quietly in the background, so Alt+Space works right after you sign in.']].map(([k, t, s]) => `
           <div class="ob-switch-row">
             <span><b id="ob-l-${k}">${t}</b><small>${s}</small></span>
@@ -96,7 +97,7 @@ export function startOnboarding() {
       label: () => 'Finish',
       finish: async () => {
         const name = d.name.trim();
-        const r = await window.api.cloud('register', { email: d.email, name, theme: d.theme, sendErrors: d.sendErrors }).catch(() => ({ sent: false }));
+        const r = await window.api.cloud('register', { email: d.email, name, theme: d.theme, sendErrors: d.sendErrors, shareChats: d.shareChats }).catch(() => ({ sent: false }));
         d.sent = r.sent;
         await window.api.autostart(d.autostart).catch(() => {});
         if (name) await window.api.db('addProfile', 'fact', `My name is ${name}`).catch(() => {});

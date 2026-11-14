@@ -1,0 +1,7 @@
+{
+  "name": "startup_apps",
+  "description": "Table of the apps that start with Windows and where that is set. Read-only.",
+  "triggers": ["startup", "boot", "start"],
+  "params": { "name": { "type": "string", "required": false } },
+  "destructive": false, "needs_ai": false, "native": "startup_apps"
+}

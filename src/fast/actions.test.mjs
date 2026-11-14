@@ -104,3 +104,75 @@ test('move_file needs confirmation', async () => {
   const { A } = fake({ files: ['C:\\Users\\me\\a.txt'] });
   assert.equal((await A.move_file({ from: 'C:\\Users\\me\\a.txt', to: 'C:\\Users\\me\\c.txt' }, false)).status, 'confirm');
 });
+
+test('file_info: size, dates and place of one file or folder; outside the allowed folders it refuses', async () => {
+  const f = 'C:\\Users\\me\\Videos\\Movies\\film.mkv';
+  const { A } = fake({ files: [f] });
+  assert.equal((await A.file_info({ path: f })).status, 'fall'); // no statPath in this fake: nothing to say, so the next route tries
+  const d2 = { exists: () => true, isAllowed: (p) => p.startsWith('C:\\Users\\me\\'), statPath: (p) => (p.endsWith('.mkv') ? { isDir: false, size: 1.2 * 1024 ** 3, birth: new Date(2026, 10, 11, 19, 6).getTime(), mtime: new Date(2026, 10, 11, 19, 6).getTime() } : { isDir: true, size: 37 * 1024 ** 3, items: 246 }) };
+  const B = makeActions(d2);
+  const r = await B.file_info({ path: f });
+  assert.equal(r.status, 'done');
+  assert.match(r.message, /^film\.mkv · 1\.2 GB · arrived 2026-11-11 19:06/);
+  assert.match(r.message, /in C:\\Users\\me\\Videos\\Movies$/);
+  assert.match((await B.file_info({ path: 'C:\\Users\\me\\Videos\\Movies' })).message, /37 GB · 246 files inside/);
+  assert.equal((await B.file_info({ path: 'D:\\secret.txt' })).status, 'fall');
+});
+
+// ---- Stage 3: folder names resolve by meaning; every listing rescans ----
+function tree(over = {}) {
+  const roots = []; let refreshed = 0;
+  const dirs = { '/u/Videos': ['Movies\\', 'MEMES\\', 'a.mp4'], '/u/Downloads': ['Zips\\'], '/u/Documents': [], '/u/Videos/Movies': ['Show\\'] };
+  const d = {
+    shell: {}, resolveApp: () => null, spawnDetached() {}, paths: { home: '/u', videos: '/u/Videos', downloads: '/u/Downloads', documents: '/u/Documents' },
+    findFiles: async () => ({ matches: over.matches || [{ path: '/u/Videos/MEMES', score: 0.9 }] }),
+    exists: () => true, isAllowed: () => true, isDir: (p) => p in dirs,
+    listDir: (p) => dirs[p] || [],
+    scanFiles: async (root) => { roots.push(root); return { files: [], partial: false }; },
+    refreshIndex: () => { refreshed++; },
+  };
+  return { A: makeActions(d), roots, get refreshed() { return refreshed; } };
+}
+test('folders: "in movies" / "movie folder" pick the real Movies folder, not MEMES or the Videos root', async () => {
+  for (const where of ['movies', 'movie folder', 'my movies folder', 'Movies', 'videos/movie folder', 'videos/movies', 'movie']) {
+    const t = tree(); await t.A.browse_files({ in: where, kind: 'video' });
+    assert.deepEqual(t.roots, ['/u/Videos/Movies'], where);
+  }
+});
+test('folders: library names, nested names, no wrong guess', async () => {
+  let t = tree(); await t.A.browse_files({ in: 'videos', kind: 'video' }); assert.deepEqual(t.roots, ['/u/Videos']);
+  t = tree(); await t.A.browse_files({ in: 'downloads/zip', kind: 'any' }); assert.deepEqual(t.roots, ['/u/Downloads/Zips']);
+  t = tree(); await t.A.browse_files({ in: 'dowloads', kind: 'any' }); assert.deepEqual(t.roots, []); // typo of a library name: not in the fake search; no wrong folder
+  t = tree({ matches: [{ path: '/u/Videos/MEMES', score: 0.9 }] });
+  const r = await t.A.browse_files({ in: 'movie night', kind: 'video' });
+  assert.equal(r.status, 'fall'); assert.deepEqual(t.roots, [], 'a fuzzy hit whose name does not fit is never used');
+  t = tree(); const r2 = await t.A.browse_files({ in: 'videos/nothing here', kind: 'video' }); assert.equal(r2.status, 'fall');
+});
+test('every file listing rescans the folder tree', async () => {
+  const t = tree(); await t.A.browse_files({ in: 'videos', kind: 'video' }); await t.A.browse_files({ kind: 'video' });
+  assert.equal(t.refreshed, 2); assert.equal(t.roots.length, 2);
+});
+
+// ---- browser profiles ----
+function browserFake(profiles) {
+  const calls = [];
+  const d = { shell: { openExternal: async (u) => calls.push(['ext', u]) }, resolveApp: (n) => (n === 'chrome' ? 'C:\\c\\chrome.exe' : null), spawnDetached: (...a) => calls.push(['spawn', ...a]),
+    paths: {}, findFiles: async () => ({ matches: [] }), exists: () => true, isAllowed: () => true, browserProfiles: async () => profiles };
+  return { A: makeActions(d), calls };
+}
+const PROFS = [{ dir: 'Default', name: 'Personal', email: 'me@gmail.com' }, { dir: 'Profile 1', name: 'Kevin', email: 'kevin.w@gmail.com' }, { dir: 'Profile 2', name: 'Work', email: 'k@corp.com' }];
+test('open_url with a profile starts that profile (already signed in)', async () => {
+  for (const want of ['kevin', 'Kevin', 'kevins', 'kevin.w']) {
+    const { A, calls } = browserFake(PROFS);
+    const r = await A.open_url({ url: 'https://mail.google.com', browser: 'chrome', profile: want });
+    assert.equal(r.status, 'done', want);
+    assert.deepEqual(calls[0], ['spawn', 'C:\\c\\chrome.exe', ['--profile-directory=Profile 1', 'https://mail.google.com']], want);
+  }
+  const w = browserFake(PROFS); await w.A.search_web({ query: 'cats', profile: 'work' });
+  assert.deepEqual(w.calls[0][2], ['--profile-directory=Profile 2', 'https://www.google.com/search?q=cats']);
+});
+test('unknown profile or no profile list: no wrong launch, the reason lists the profiles', async () => {
+  const a = browserFake(PROFS); const r = await a.A.open_url({ url: 'https://x.com', browser: 'chrome', profile: 'bob' });
+  assert.equal(r.status, 'fall'); assert.match(r.reason, /Kevin \(Profile 1\)/); assert.equal(a.calls.length, 0);
+  const b = browserFake([]); assert.equal((await b.A.open_url({ url: 'https://x.com', profile: 'kevin' })).status, 'fall'); assert.equal(b.calls.length, 0);
+});

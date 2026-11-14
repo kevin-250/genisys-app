@@ -2,6 +2,8 @@
 // Only a few safe "open / search / play" shapes are understood. Everything else gets a low confidence and goes on to the AI.
 import { normalize, typoDistance } from './normalize.js';
 import { parseSystem } from './system.js';
+import { parseFileQuery, unexplainedWords } from './fileQuery.js';
+import { parseSysQuery } from './tables.js';
 
 export const FAST_MIN = 0.75; // at or above this the fast path may run it
 
@@ -22,8 +24,11 @@ export const SITES = {
   linkedin: 'https://www.linkedin.com', reddit: 'https://www.reddit.com', netflix: 'https://www.netflix.com', chatgpt: 'https://chatgpt.com',
   wikipedia: 'https://www.wikipedia.org', maps: 'https://www.google.com/maps', 'google maps': 'https://www.google.com/maps',
   whatsapp: 'https://web.whatsapp.com', 'whatsapp web': 'https://web.whatsapp.com', amazon: 'https://www.amazon.com', 'google drive': 'https://drive.google.com',
+  news: 'https://news.google.com', bbc: 'https://www.bbc.com', stackoverflow: 'https://stackoverflow.com', 'stack overflow': 'https://stackoverflow.com',
+  tiktok: 'https://www.tiktok.com', pinterest: 'https://www.pinterest.com', twitch: 'https://www.twitch.tv', 'google docs': 'https://docs.google.com',
+  'google sheets': 'https://sheets.google.com', 'google translate': 'https://translate.google.com', claude: 'https://claude.ai', gemini: 'https://gemini.google.com',
 };
-const SEARCH_SITES = ['youtube', 'google', 'bing', 'duckduckgo', 'wikipedia', 'github', 'amazon'];
+const SEARCH_SITES = ['youtube', 'google', 'bing', 'duckduckgo', 'wikipedia', 'github', 'amazon', 'stackoverflow', 'stack overflow'];
 export const APP_ALIASES = {
   'google chrome': 'chrome', 'microsoft edge': 'edge', 'vs code': 'code', vscode: 'code', 'visual studio code': 'code',
   'file explorer': 'explorer', 'task manager': 'taskmgr', 'command prompt': 'cmd', 'control panel': 'control', calc: 'calculator',
@@ -39,7 +44,7 @@ const EXT = /\.(mp4|mkv|avi|mov|wmv|webm|mp3|flac|wav|m4a|pdf|docx?|xlsx?|pptx?|
 const URL_RE = /^(?:https?:\/\/\S+|www\.\S+|[a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)*\.(?:com|org|net|io|rw|co|dev|app|ai|edu|gov|info|tv|me|ly|uk)(?:[/?#]\S*)?)$/i;
 const MULTI = /\b(and|then|after|also|before)\b|,|;/;
 // "search …" is a web search unless it is clearly about this PC ("in my movie folder", "on my pc") or wants an answer back.
-const PC_SEARCH = /\b(?:my|this)\s+(?:\w+\s+)?(?:files?|folders?|downloads?|documents?|desktop|videos?|movies?|films?|music|songs?|pictures?|photos?|pc|computer|laptop|drive)\b|\b(?:in|inside|from|across|through)\s+(?:the\s+)?\w*\s*(?:folders?|director(?:y|ies)|downloads|documents|desktop|videos|pictures|music)\b|\b(?:folders?|director(?:y|ies)|file\s+(?:manager|explorer))\b|\band\s+(?:tell|show|see|list|give)\b/;
+const PC_SEARCH = /\bi\s+(?:have|got|own|downloaded|saved)\b|\b(?:my|this)\s+(?:\w+\s+)?(?:files?|folders?|downloads?|documents?|desktop|videos?|movies?|films?|music|songs?|pictures?|photos?|pc|computer|laptop|drive)\b|\b(?:in|inside|from|across|through)\s+(?:the\s+)?\w*\s*(?:folders?|director(?:y|ies)|downloads|documents|desktop|videos|pictures|music)\b|\b(?:folders?|director(?:y|ies)|file\s+(?:manager|explorer))\b|\band\s+(?:tell|show|see|list|give)\b/;
 const WEB_HINT = /\b(?:online|on the (?:internet|web)|the web|internet)\b/;
 const FILLER = new Set(['called', 'named', 'titled', 'the', 'in', 'of']);
 // "film called trigger ep 1 in potplayer" -> { q: 'trigger ep 1', with: 'potplayer' }
@@ -60,7 +65,7 @@ function pickVerb(words) {
   if (w === 'go' && w2 === 'to') return { verb: 'open', rest: words.slice(2), typo: false };
   if (w === 'look' && (w2 === 'up' || w2 === 'for')) return { verb: 'search', rest: words.slice(2), typo: false };
   if (VERBS[w]) return { verb: VERBS[w], rest: words.slice(1), typo: false };
-  if (w.length >= 4) {
+  if (w.length >= 3) {
     const near = FUZZY_VERBS.find((v) => typoDistance(w, v) <= (w.length >= 6 ? 2 : 1));
     if (near) return { verb: VERBS[near], rest: words.slice(1), typo: true };
   }
@@ -73,6 +78,14 @@ export function parseIntent(text) {
   const raw = String(text ?? '').trim();
   const n = normalize(raw);
   if (!n) return unknown(n, 0, 'empty');
+  // "show all movies in videos newest first": a file table, however long the sentence
+  const sq = parseSysQuery(raw); // running / installed apps, drives, startup apps, Wi-Fi networks
+  if (sq) return out(sq.action, sq.params, 0.9, n, 'pc table');
+  const fq = parseFileQuery(raw);
+  if (fq) { // fully understood -> the fast path; any word the parser did not act on ("tiny", a typo) -> the model reads the sentence (the parse stays as its fallback)
+    const left = unexplainedWords(raw, fq.params);
+    return out(fq.action, fq.params, left.length ? 0.5 : 0.9, n, left.length ? `file table, unsure about: ${left.join(' ')}` : 'file table');
+  }
   const words = n.split(' ');
   if (words.length > 16) return unknown(n, 0.1, 'too long for the fast path');
 
@@ -82,6 +95,11 @@ export function parseIntent(text) {
 
   // A bare URL ("youtube.com", "https://x.com/a") just opens.
   if (words.length === 1 && URL_RE.test(words[0])) return out('open_url', { url: toUrl(rawToken(raw, words[0])) }, 0.92, n, 'bare url');
+  // Weather and quick math: a Google search answers these on the spot, no AI needed.
+  const plain = normalize(raw, { keepAll: true });
+  if (/^(?:whats\s+|what\s+is\s+|hows\s+|how\s+is\s+)?(?:weather|forecast)\b(?!\s+app)/.test(n)) return out('search_web', { query: plain.replace(/^(?:whats|what is|hows|how is)\s+(?:the\s+)?/, '') }, 0.9, n, 'weather');
+  const math = plain.match(/^(?:calculate|compute|convert)\s+(.*\d.*)$/) || plain.match(/^(?:what\s+is|whats|how\s+much\s+is)\s+(\d.*(?:[+\-*/%^×÷]|\b(?:of|to|in|into|percent|plus|minus|times|divided|squared|miles|km|kg|lbs|pounds|cm|inches|feet|meters|celsius|fahrenheit|dollars|usd|eur|rwf)\b).*)$/);
+  if (math) return out('search_web', { query: math[1] }, 0.88, n, 'quick math');
 
   const v = pickVerb(words);
   if (!v) return unknown(n, 0.2, 'no known verb');
@@ -92,9 +110,14 @@ export function parseIntent(text) {
   const rv = pickVerb(normalize(raw, { keepAll: true }).split(' '));
   const restRaw = rv ? rv.rest.join(' ').trim() : rest;
 
-  // "... in/using chrome" at the end
+  // "... in kevin chrome profile": which browser profile to open it in
   let browser = null;
-  let searchRest = restRaw;
+  let profile = null;
+  const tp = takeProfile(rest);
+  if (tp) { profile = tp.profile; browser = tp.browser || 'chrome'; rest = rest.slice(0, tp.cut).trim(); }
+  const tpRaw = takeProfile(restRaw);
+  // "... in/using chrome" at the end
+  let searchRest = tpRaw ? restRaw.slice(0, tpRaw.cut).trim() : restRaw;
   const bm0 = searchRest.match(/\s+(?:in|on|with|using|via|through)\s+(google chrome|microsoft edge|chrome|edge|firefox|brave|opera)$/);
   const bm = rest.match(/\s+(?:in|on|with|using|via|through)\s+(google chrome|microsoft edge|chrome|edge|firefox|brave|opera)$/);
   if (bm) { browser = BROWSERS[bm[1]]; rest = rest.slice(0, bm.index).trim(); }
@@ -106,13 +129,15 @@ export function parseIntent(text) {
   if (v.verb === 'search') {
     let site = null;
     if (bm0) searchRest = searchRest.slice(0, bm0.index).trim();
-    const sm = searchRest.match(new RegExp(`\\s+(?:on|in|at)\\s+(${SEARCH_SITES.join('|')})$`));
-    if (sm) { site = sm[1]; searchRest = searchRest.slice(0, sm.index).trim(); }
+    const sm = searchRest.match(new RegExp(`\\s+(?:on|in|at)\\s+(${SEARCH_SITES.join('|')})$`)) || searchRest.match(new RegExp(`^(${SEARCH_SITES.join('|')})\\s+for\\s+`));
+    if (sm) { site = sm[1].replace(' ', ''); searchRest = (searchRest.slice(0, sm.index) + searchRest.slice(sm.index + sm[0].length)).trim(); }
+    if (EXT.test(searchRest)) return unknown(n, 0.4, 'a file name: search on this PC, the AI decides');
     if (!browser && !site && words[0] !== 'google' && !WEB_HINT.test(restRaw) && PC_SEARCH.test(restRaw)) return unknown(n, 0.4, 'search on this PC: the AI decides');
     const query = cleanQuery(searchRest);
     if (!query) return unknown(n, 0.1, 'nothing to search for');
     const params = { query };
     if (browser) params.browser = browser;
+    if (profile) params.profile = profile;
     if (site && site !== 'google') params.site = site;
     return out('search_web', params, 0.92 - typoPenalty - (browser || site ? 0.03 : 0), n, 'search');
   }
@@ -120,6 +145,7 @@ export function parseIntent(text) {
 
   // Everything below is "open/play something": reject multi-step shapes.
   if (MULTI.test(rest)) return unknown(n, 0.2, 'looks like more than one step');
+  if (/\b(?:latest|newest|last|recent|oldest|biggest)\b/.test(rest)) return unknown(n, 0.4, '"latest/last" needs a lookup: the AI decides');
 
   if (v.verb === 'play') {
     if (/\s+(?:on|in|using|with)\s+(spotify|youtube|apple music|deezer|soundcloud|netflix)$/.test(rest)) return unknown(n, 0.4, 'play inside an app needs the AI');
@@ -128,17 +154,27 @@ export function parseIntent(text) {
   }
 
   // v.verb === 'open'
-  const target = rest;
-  if (URL_RE.test(target)) return out('open_url', withBrowser({ url: toUrl(rawToken(raw, target)) }, browser), 0.93 - typoPenalty, n, 'url');
+  const target = rest.replace(/\s+(?:(?:desk\w*|dekst\w*|windows|pc)\s+)?(?:app|application|program)$/, '').replace(/\s+desk\w*$/, ''); // "chatgpt deskrop app" (typo) = chatgpt
+  if (URL_RE.test(target)) return out('open_url', withProfile(withBrowser({ url: toUrl(rawToken(raw, target)) }, browser), profile), 0.93 - typoPenalty, n, 'url');
+  // "open c:", "open d:\projects", "open c drive": a path on this PC
+  const pm = target.match(/^([a-z]):(?:\\.*)?$/) || target.match(/^([a-z])\s+drive$/) || (target.length === 1 && raw.match(/\s([a-z]):\s*$/i)); // "open c:" (normalize drops the colon)
+  if (pm) return out('open_path', { path: pm[0].includes('\\') ? rawToken(raw, target) : `${pm[1].toUpperCase()}:\\` }, 0.9 - typoPenalty, n, 'path');
   // A name that is both an app and a site ("whatsapp", "netflix"): the installed desktop app first, the website only if it
   // isn't installed. "whatsapp web" or "... in chrome" still means the website.
+  if (!SITES[target] && target.length >= 5 && /^[a-z0-9]+$/.test(target)) { // "gmain" -> gmail: one typo in a known site name
+    const near = Object.keys(SITES).find((k) => k.length >= 5 && Math.abs(k.length - target.length) <= 1 && editDistance(k, target) === 1);
+    if (near) return out('open_url', withProfile(withBrowser({ url: SITES[near] }, browser), profile), 0.85 - typoPenalty, n, `known site (typo: ${near})`);
+  }
   const both = APP_ALIASES[target] || target;
   if (SITES[target] && KNOWN_APPS.has(both) && !browser) return out('open_app', { name: both, url: SITES[target] }, 0.95 - typoPenalty, n, 'app, else its website');
-  if (SITES[target]) return out('open_url', withBrowser({ url: SITES[target] }, browser), 0.95 - typoPenalty, n, 'known site');
+  if (SITES[target]) return out('open_url', withProfile(withBrowser({ url: SITES[target] }, browser), profile), 0.95 - typoPenalty, n, 'known site');
   const folderWord = target.replace(/\s*(?:folder|directory|dir)$/, '').trim();
   if (FOLDERS[folderWord]) return out('open_folder', { folder: FOLDERS[folderWord] }, 0.95 - typoPenalty, n, 'known folder');
   const fm = target.match(/^(?:folder|directory)\s+(.+)$/) || target.match(/^(.+?)\s+(?:folder|directory)$/);
-  if (fm) return out('open_folder', { name: fm[1].replace(TYPE_WORDS, ' ').trim() }, 0.82 - typoPenalty, n, 'named folder');
+  if (fm) return out('open_folder', { name: fm[1].replace(/^(?:called|named)\s+/, '').replace(TYPE_WORDS, ' ').trim() }, 0.82 - typoPenalty, n, 'named folder');
+  // "open the pdf called resume", "open excel file budget"
+  const tw = target.match(/^(pdf|docx?|xlsx?|pptx?|txt|csv|png|jpe?g|mp3|mp4|zip|excel|word|powerpoint)\s+(?:file\s+)?(?:called|named)?\s*(.+)$/);
+  if (tw && tw[2]) return out('open_file', { query: tw[2].trim(), media: false, ext: { excel: 'xlsx', word: 'docx', powerpoint: 'pptx' }[tw[1]] || tw[1] }, 0.85 - typoPenalty, n, 'typed file');
   const ext = target.match(EXT);
   if (MEDIA_WORDS.test(target) || ext || /^file\s/.test(target)) {
     const { q, with: app } = ext ? { q: target.replace(TYPE_WORDS, ' ').replace(/\s+/g, ' ').trim() } : mediaQuery(target);
@@ -150,13 +186,24 @@ export function parseIntent(text) {
   const app = APP_ALIASES[target] || target;
   if (browser && !KNOWN_APPS.has(app)) return unknown(n, 0.3, 'unclear target');
   if (KNOWN_APPS.has(app)) return out('open_app', { name: app }, 0.96 - typoPenalty, n, 'known app');
-  if (target.split(' ').length <= 3 && !/\b(about|with|that|which|where|how|what|why|who|from|for|into)\b/.test(target)) {
+  if (app.split(' ').some((w) => KNOWN_APPS.has(w))) return unknown(n, 0.4, 'an app name plus more: the AI decides');
+  if (target.split(' ').length <= 3 && !/\b(about|with|that|which|where|how|what|why|who|from|for|into|files?|folders?)\b/.test(target)) {
     return out('open_app', { name: target }, 0.8 - typoPenalty, n, 'maybe an app');
   }
   return unknown(n, 0.4, 'unclear target');
 }
 
+function editDistance(a, b) { const m = [...Array(a.length + 1)].map((_, i) => [i, ...Array(b.length).fill(0)]); for (let j = 1; j <= b.length; j++) m[0][j] = j; for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++) m[i][j] = Math.min(m[i - 1][j] + 1, m[i][j - 1] + 1, m[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)); return m[a.length][b.length]; }
+function withProfile(p, profile) { if (profile) p.profile = profile; return p; }
 function withBrowser(p, browser) { if (browser) p.browser = browser; return p; }
+// "... in kevin chrome profile", "... with my work profile", "... in kevins chrome": a named browser profile (its own sign-ins).
+const PROFILE_RE = /\s+(?:in|on|with|using|via|from|under)\s+(?:(?:my|the)\s+)?([a-z0-9@._ -]{1,40}?)(?:\s+s)?\s+(?:(google chrome|microsoft edge|chrome|edge|brave)\s+)?profile$/;
+const PROFILE_RE2 = /\s+(?:in|on|with|using|via|from)\s+(?!(?:my|the|a|new|incognito|private)\s)([a-z0-9@._-]{2,30})(?:\s+s)?\s+(google chrome|microsoft edge|chrome|edge|brave)$/;
+function takeProfile(str) {
+  const m = String(str).match(PROFILE_RE) || String(str).match(PROFILE_RE2);
+  if (!m || /^(my|the|default browser|new|incognito|private)$/.test(m[1].trim())) return null;
+  return { profile: m[1].trim(), browser: m[2] ? BROWSERS[m[2]] : null, cut: m.index };
+}
 function toUrl(t) { return /^https?:\/\//i.test(t) ? t : `https://${t}`; }
 // URLs keep their original letter case (paths can be case-sensitive): find the token in the raw text.
 function rawToken(raw, lowered) {

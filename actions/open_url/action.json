@@ -1,6 +1,6 @@
 {
   "name": "open_url",
-  "description": "Open a web address in the default browser, or in a named browser.",
+  "description": "Open a web address in the default browser, or in a named browser, optionally in a named browser profile (the one with your sign-ins), e.g. profile \"Kevin\".",
   "triggers": [
     "open",
     "go",
@@ -22,6 +22,10 @@
         "brave",
         "opera"
       ],
+      "required": false
+    },
+    "profile": {
+      "type": "string",
       "required": false
     }
   },

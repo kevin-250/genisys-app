@@ -1,0 +1,22 @@
+{
+  "name": "file_info",
+  "description": "Size, dates and location of ONE file or folder (a folder's size is everything inside it). Use it for \"how large is it\", \"when did I get it\", \"where is it\" about a file or folder named earlier in the conversation, or given by full path.",
+  "triggers": [
+    "how large",
+    "how big",
+    "size of",
+    "when did i get",
+    "where is it"
+  ],
+  "params": {
+    "path": {
+      "type": "path",
+      "required": true
+    }
+  },
+  "destructive": false,
+  "needs_ai": false,
+  "paths": [],
+  "restrictPaths": true,
+  "native": "file_info"
+}

@@ -1,6 +1,6 @@
 {
   "name": "search_web",
-  "description": "Search the web (Google by default) in the default or a named browser.",
+  "description": "Search the web (Google by default) in the default or a named browser, optionally in a named browser profile (the one with your sign-ins), e.g. profile \"Kevin\".",
   "triggers": [
     "search",
     "google",
@@ -32,8 +32,13 @@
         "duckduckgo",
         "wikipedia",
         "github",
-        "amazon"
+        "amazon",
+        "stackoverflow"
       ],
+      "required": false
+    },
+    "profile": {
+      "type": "string",
       "required": false
     }
   },

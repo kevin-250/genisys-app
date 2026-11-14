@@ -36,23 +36,27 @@ export const CONTROLS = {
   open_settings: { help: `open a Settings page (name = ${Object.keys(PAGES).join('|')})` },
   battery: { help: 'battery level' }, disk_space: { help: 'free disk space' }, memory: { help: 'RAM use' }, cpu: { help: 'CPU use' },
   windows_version: { help: 'Windows version' }, uptime: { help: 'how long the PC has been on' }, ip_address: { help: 'IP address' }, wifi_name: { help: 'connected Wi-Fi name' },
-  empty_recycle_bin: { help: 'empty the Recycle Bin', ask: 'Empty the Recycle Bin? Deleted files there will be gone for good.' },
+  clock: { help: 'current time and date' }, recycle_bin: { help: 'open the Recycle Bin' }, specs: { help: 'PC specs: CPU, GPU, RAM, Windows' }, wifi_password: { help: 'password of the connected Wi-Fi' },
+  empty_recycle_bin: async () => { // run it, then COUNT what is left: "emptied" only when the bin really is empty
+      await ps("Clear-RecycleBin -Force -ErrorAction SilentlyContinue; $n = @((New-Object -ComObject Shell.Application).Namespace(0xA).Items()).Count; if ($n -gt 0) { throw \"$n item(s) are still in the Recycle Bin\" }");
+      return 'Recycle Bin emptied (checked: it is empty now)';
+    },
 };
 
 const n = (s) => (s === undefined ? undefined : Number(s));
-const PAGE_WORDS = { 'wi-fi': 'wifi', 'wi fi': 'wifi', 'date and time': 'date_time', time: 'date_time', 'default apps': 'default_apps', update: 'updates', 'windows update': 'updates', 'night light': 'night_light', theme: 'personalization', background: 'personalization', speaker: 'sound', speakers: 'sound', audio: 'sound', screen: 'display', touchpad: 'mouse', airplane: 'airplane', 'airplane mode': 'airplane', 'battery saver': 'battery', sleep: 'power' };
+const PAGE_WORDS = { 'wi-fi': 'wifi', 'wi fi': 'wifi', 'date and time': 'date_time', time: 'date_time', 'default apps': 'default_apps', update: 'updates', 'windows update': 'updates', 'night light': 'night_light', theme: 'personalization', background: 'personalization', speaker: 'sound', speakers: 'sound', audio: 'sound', screen: 'display', touchpad: 'mouse', airplane: 'airplane', 'airplane mode': 'airplane', 'battery saver': 'battery', sleep: 'power', windows: 'settings', pc: 'settings', system: 'settings' };
 
 // [pattern on normalized text, id, (match) -> extra params]. First match wins; anchored so normal sentences don't match.
 const RULES = [
-  [/^(?:(?:set|put|turn|change|make)\s+)?(?:volume|sound)\s+(?:to\s+|at\s+)?(\d{1,3})\s*%?$/, 'volume', (m) => ({ value: n(m[1]) })],
-  [/^(?:set|put|turn|change)\s+(?:volume|sound)\s+(?:to|at)\s+(\d{1,3})\s*%?$/, 'volume', (m) => ({ value: n(m[1]) })],
-  [/^(?:volume|sound)\s+(?:up|higher|louder)(?:\s+(?:by\s+)?(\d{1,2}))?$|^(?:turn|make)\s+(?:it|volume|sound|music)\s+(?:up|louder)$|^louder$/, 'volume_up', (m) => (m[1] ? { value: n(m[1]) } : {})],
-  [/^(?:volume|sound)\s+(?:down|lower|quieter)(?:\s+(?:by\s+)?(\d{1,2}))?$|^(?:turn|make)\s+(?:it|volume|sound|music)\s+(?:down|quieter)$|^quieter$/, 'volume_down', (m) => (m[1] ? { value: n(m[1]) } : {})],
+  [/^(?:(?:set|put|turn|change|make)\s+)?(?:volume|sound)\s+(?:to\s+|at\s+)?(\d{1,3})\s*(?:%|percent)?$/, 'volume', (m) => ({ value: n(m[1]) })],
+  [/^(?:max|full|maximum)\s+(?:volume|sound)$|^(?:volume|sound)\s+(?:max|full|maximum)$/, 'volume', () => ({ value: 100 })],
+  [/^(?:volume|sound)\s+(?:up|higher|louder)(?:\s+(?:by\s+)?(\d{1,2}))?$|^(?:turn|make)\s+(?:it|volume|sound|music)\s+(?:up|louder)(?:\s+(?:bit|little))?$|^louder$|^(?:increase|raise|turn\s+up)\s+(?:the\s+)?(?:volume|sound)$/, 'volume_up', (m) => (m[1] ? { value: n(m[1]) } : {})],
+  [/^(?:volume|sound)\s+(?:down|lower|quieter)(?:\s+(?:by\s+)?(\d{1,2}))?$|^(?:turn|make)\s+(?:it|volume|sound|music)\s+(?:down|quieter)(?:\s+(?:bit|little))?$|^quieter$|^(?:decrease|lower|reduce|turn\s+down)\s+(?:the\s+)?(?:volume|sound)$/, 'volume_down', (m) => (m[1] ? { value: n(m[1]) } : {})],
   [/^(?:mute|silence)(?:\s+(?:sound|volume|audio|pc|computer|it))?$/, 'mute'],
   [/^unmute(?:\s+(?:sound|volume|audio|pc|computer|it))?$|^turn\s+(?:sound|audio)\s+(?:back\s+)?on$/, 'unmute'],
   [/^(?:play|pause|resume)(?:\s+(?:music|song|video|it|media))?$|^play\s*\/\s*pause$/, 'play_pause'],
   [/^(?:next|skip)(?:\s+(?:song|track|music))?$|^skip\s+(?:this\s+)?(?:song|track)$/, 'next_track'],
-  [/^(?:previous|last|back)\s+(?:song|track)$/, 'previous_track'],
+  [/^(?:previous|last|back)\s+(?:song|track)$|^go\s+back\s+(?:a\s+)?(?:song|track)$/, 'previous_track'],
   [/^stop\s+(?:music|song|playing|media)$/, 'stop_media'],
   [/^(?:(?:set|put|turn|change|make)\s+)?brightness\s+(?:to\s+|at\s+)?(\d{1,3})\s*%?$/, 'brightness', (m) => ({ value: n(m[1]) })],
   [/^brightness\s+up$|^(?:make\s+)?(?:screen\s+)?brighter$|^(?:increase|raise)\s+brightness$/, 'brightness_up'],
@@ -60,7 +64,10 @@ const RULES = [
   [/^(?:open|start|launch|turn\s+on)\s+(?:camera|webcam)(?:\s+app)?$|^camera$/, 'camera'],
   [/^(?:take|capture|grab)\s+(?:a\s+)?(?:screenshot|screen\s*shot|screen\s+capture|picture\s+of\s+(?:my\s+)?screen)$|^screenshot$/, 'screenshot'],
   [/^snip(?:\s+(?:screen|part\s+of\s+screen))?$|^(?:open\s+)?snipping\s+tool$/, 'snip'],
-  [/^(?:turn|switch)\s+(?:on\s+)?wi-?\s?fi(?:\s+on)?$|^(?:enable|connect)\s+wi-?\s?fi$|^wi-?\s?fi\s+on$/, 'wifi_on'],
+  [/^(?:turn|switch)\s+(?:on\s+)?wi-?\s?fi(?:\s+back)?(?:\s+on)?$|^(?:enable|connect)\s+wi-?\s?fi$|^wi-?\s?fi\s+on$/, 'wifi_on'],
+  [/^connect\s+(?:to\s+)?(?:a\s+)?(?:wi-?\s?fi|network)$/, 'open_settings', () => ({ name: 'wifi' })],
+  [/^(?:check\s+(?:for\s+)?)?(?:windows\s+)?updates?$|^update\s+windows$/, 'open_settings', () => ({ name: 'updates' })],
+  [/^(?:change|set|choose)\s+(?:my\s+)?(?:wallpaper|background|desktop\s+background)$/, 'open_settings', () => ({ name: 'personalization' })],
   [/^(?:turn|switch)\s+(?:off\s+)?wi-?\s?fi\s+off$|^(?:turn|switch)\s+off\s+wi-?\s?fi$|^(?:disable|disconnect)\s+wi-?\s?fi$|^wi-?\s?fi\s+off$/, 'wifi_off'],
   [/^(?:turn|switch)\s+(?:on\s+)?bluetooth(?:\s+on)?$|^(?:enable)\s+bluetooth$|^bluetooth\s+on$/, 'bluetooth_on'],
   [/^(?:turn|switch)\s+(?:off\s+bluetooth|bluetooth\s+off)$|^disable\s+bluetooth$|^bluetooth\s+off$/, 'bluetooth_off'],
@@ -76,14 +83,15 @@ const RULES = [
   [/^(?:put\s+(?:pc|computer|laptop|it)\s+to\s+)?sleep(?:\s+(?:pc|computer|laptop|now))?$|^go\s+to\s+sleep$/, 'sleep'],
   [/^hibernate(?:\s+(?:pc|computer|laptop|now))?$/, 'hibernate'],
   [/^(?:restart|reboot)(?:\s+(?:pc|computer|laptop|windows|now))?$/, 'restart'],
-  [/^(?:shut\s*down|turn\s+off|power\s+off)(?:\s+(?:pc|computer|laptop|now))?$/, 'shutdown'],
-  [/^(?:sign|log)\s*(?:out|off)$/, 'sign_out'],
+  [/^(?:shut\s*down|turn\s+off|switch\s+off|power\s+off)(?:\s+(?:pc|computer|laptop|now))?$/, 'shutdown'],
+  [/^(?:sign|log)\s*(?:out|off)(?:\s+of\s+windows)?$/, 'sign_out'],
   [/^(?:show|go\s+to)\s+desktop$|^minimi[sz]e\s+(?:all|everything)(?:\s+windows)?$/, 'show_desktop'],
   [/^(?:open\s+)?task\s+manager$/, 'task_manager'],
   [/^(?:open\s+)?control\s+panel$/, 'control_panel'],
   [/^(?:open\s+)?device\s+manager$/, 'device_manager'],
-  [/^(?:open\s+)?(?:file\s+explorer|file\s+manager|explorer|this\s+pc|my\s+computer)$/, 'file_explorer'],
-  [/^(?:open\s+)?(?:(.+?)\s+)?settings$/, 'open_settings', (m) => ({ name: m[1] || 'settings' })],
+  [/^(?:open\s+)?(?:file\s+explorer|file\s+manager|explorer|this\s+pc|my\s+computer|computer)$/, 'file_explorer'],
+  [/^(?:open|show)\s+(?:the\s+)?(?:recycle\s+bin|trash|bin)$/, 'recycle_bin'],
+  [/^(?:open\s+)?(?:(.+?)\s+)?settings(?:\s+app)?$/, 'open_settings', (m) => ({ name: m[1] || 'settings' })],
   [/^(?:how\s+much\s+)?battery(?:\s+(?:level|left|percentage|status))?$|^(?:what\s+is\s+|whats\s+)?(?:my\s+)?battery(?:\s+level)?$/, 'battery'],
   [/^(?:how\s+much\s+)?(?:free\s+)?(?:disk|storage|space)(?:\s+(?:space|left|free))?(?:\s+(?:do\s+i\s+have|left))?$|^disk\s+space$/, 'disk_space'],
   [/^(?:how\s+much\s+)?(?:ram|memory)(?:\s+(?:use|usage|used|free|left))?$/, 'memory'],
@@ -108,15 +116,19 @@ export function parseSystem(text) {
       if (!page) continue; // "open chrome settings" is not a Windows page
       p.name = page;
     }
-    if (id === 'close_app' && /^(?:it|this|that|tab|the\s+tab|window)$/.test(p.name)) return null; // ambiguous: let the AI decide
+    if (id === 'close_app') p.name = p.name.replace(/^all\s+/, '').replace(/\s+(?:processes|process|app|apps|windows?)$/, ''); // "kill all chrome processes" -> chrome
+    if (id === 'close_app' && (/^(?:it|this|that|tab|tabs|the\s+tab|window|all)$/.test(p.name) || /\b(?:and|then)\b/.test(p.name))) return null; // ambiguous or two steps: the AI / splitTask decides
     if ((id === 'volume' || id === 'brightness') && p.value > 100) return null;
     return p;
   }
   // Questions about this PC: "how much battery do I have", "check my free space", "whats my ip", "ram usage"
-  const q = t.replace(/^(?:how\s+much|what\s+is|whats|check|show(?:\s+me)?|tell\s+me|see)\s+/, '').replace(/^(?:my|the)\s+/, '')
-    .replace(/\s+(?:do\s+i\s+have|is\s+left|left|now|right\s+now|usage|use|level|status|percentage|on\s+(?:this|my)\s+(?:pc|computer|laptop))$/, '').trim();
-  const INFO = [[/^(?:battery|charge)$/, 'battery'], [/^(?:free\s+)?(?:disk\s+)?(?:space|storage|disk)$/, 'disk_space'], [/^(?:ram|memory)$/, 'memory'],
-    [/^(?:cpu|processor)$/, 'cpu'], [/^ip(?:\s+address)?$/, 'ip_address'], [/^wi-?\s?fi(?:\s+name)?$/, 'wifi_name'], [/^(?:windows\s+version|version\s+of\s+windows)$/, 'windows_version']];
+  const q = t.replace(/^(?:how\s+much|what(?:\s+is)?|whats|which|check|show(?:\s+me)?|tell\s+me|see)\s+/, '').replace(/^(?:my|the)\s+/, '')
+    .replace(/\s+(?:do\s+i\s+have(?:\s+left)?|is\s+left|left|now|right\s+now|usage|use|level|status|percentage|at|is\s+(?:it\s+)?(?:today|now)|is\s+it|today|am\s+i\s+(?:on|using|connected\s+to)|on\s+(?:this|my)\s+(?:pc|computer|laptop))$/, '').trim();
+  const INFO = [[/^(?:battery|charge)$|^am\s+i\s+charging$|^is\s+(?:pc|laptop|computer|it)\s+(?:charging|on\s+battery|plugged\s+in)$/, 'battery'], [/^(?:free\s+)?(?:disk\s+)?(?:space|storage|disk)$/, 'disk_space'], [/^(?:ram|memory)$/, 'memory'],
+    [/^(?:cpu|processor)$/, 'cpu'], [/^(?:local\s+)?ip(?:\s+address)?$/, 'ip_address'], [/^wi-?\s?fi(?:\s+name)?$/, 'wifi_name'], [/^(?:windows\s+version|version\s+of\s+windows|windows)$/, 'windows_version'],
+    [/^(?:time|date|day|today)$|^todays?\s+(?:date|time|day)$|^current\s+(?:date|time)$|^(?:date|time)\s+and\s+(?:time|date)$/, 'clock'],
+    [/^(?:(?:pc|computer|laptop|system)\s+)?(?:specs|specifications)$|^(?:pc|computer|laptop|system)\s+(?:info|information)$|^(?:gpu|graphics\s+card|processor\s+name)$/, 'specs'],
+    [/^wi-?\s?fi\s+password$/, 'wifi_password'], [/^when\s+did\s+i\s+turn\s+on\s+(?:pc|computer|laptop)$/, 'uptime']];
   for (const [re, id] of INFO) if (re.test(q)) return { do: id };
   return null;
 }
@@ -207,7 +219,17 @@ export function makeSystem(d) {
       return parts.length ? `Free space — ${parts.join(', ')}` : 'Could not read the disks';
     },
     memory: async () => { const t = d.os.totalmem(), f = d.os.freemem(); return `RAM: ${fmtGB(t - f)} used of ${fmtGB(t)} (${Math.round(((t - f) / t) * 100)}%)`; },
-    cpu: async () => `CPU is at ${await ps('[int](Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average')}% right now`,
+    cpu: async () => { const [name, load] = (await ps('$p = Get-CimInstance Win32_Processor | Select-Object -First 1; "$($p.Name.Trim())|$($p.LoadPercentage)"')).split('|'); return `${name} is at ${load}% right now`; },
+    specs: async () => {
+      const [cpu, gpu] = (await ps('$p = Get-CimInstance Win32_Processor | Select-Object -First 1; $g = (Get-CimInstance Win32_VideoController | ForEach-Object { $_.Name }) -join ", "; "$($p.Name.Trim())|$g"')).split('|');
+      return `CPU: ${cpu} · GPU: ${gpu || 'unknown'} · RAM: ${fmtGB(d.os.totalmem())} · ${d.os.version()} (build ${d.os.release()})`;
+    },
+    wifi_password: async () => {
+      const out = await ps(`$s = ((netsh wlan show interfaces) -match '^\\s+SSID\\s+:' | Select-Object -First 1) -replace '^.*:\\s*', ''; if (-not $s) { 'none' } else { $k = ((netsh wlan show profile name="$s" key=clear) -match 'Key Content') -replace '^.*:\\s*', ''; "$s|$k" }`);
+      if (out === 'none') return 'You are not connected to Wi-Fi';
+      const [ssid, key] = out.split('|');
+      return key ? `Password for "${ssid}": ${key}` : `No saved password for "${ssid}" (run Genisys as administrator to read it)`;
+    },
     windows_version: async () => `${d.os.version()} (build ${d.os.release()})`,
     uptime: async () => `Your PC has been on for ${fmtUp(d.os.uptime())}`,
     ip_address: async () => {
@@ -219,7 +241,9 @@ export function makeSystem(d) {
       const m = /:\s*(.+)$/.exec(out);
       return m ? `You are connected to "${m[1].trim()}"` : 'You are not connected to Wi-Fi';
     },
-    empty_recycle_bin: async () => { await ps('Clear-RecycleBin -Force -ErrorAction SilentlyContinue'); return 'Recycle Bin emptied'; },
+    clock: async () => { const t = new Date(); return `It's ${t.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} on ${t.toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}`; },
+    recycle_bin: async () => { d.launch('explorer.exe', ['shell:RecycleBinFolder']); return 'Recycle Bin opened'; },
+    empty_recycle_bin: async () => { await ps('Clear-RecycleBin -Force -ErrorAction Stop'); return 'Recycle Bin emptied'; }, // errors surface: never say "emptied" if it failed
   };
 
   return async function run(p, confirmed) {

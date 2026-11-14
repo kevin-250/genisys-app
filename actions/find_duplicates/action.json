@@ -1,0 +1,16 @@
+{
+  "name": "find_duplicates",
+  "description": "Find files with identical content in a folder and its subfolders, and how much space the extra copies waste. Same in/kind/ext/name/when/size filters as browse_files. Only shows them, deletes nothing.",
+  "triggers": ["duplicate", "duplicates", "copies", "same", "double"],
+  "params": {
+    "in": { "type": "string", "required": false },
+    "kind": { "type": "enum", "required": false, "values": ["any", "video", "audio", "image", "document", "archive", "program", "code"] },
+    "ext": { "type": "string", "required": false },
+    "name": { "type": "string", "required": false },
+    "when": { "type": "string", "required": false },
+    "size": { "type": "string", "required": false }
+  },
+  "destructive": false,
+  "needs_ai": false,
+  "native": "find_duplicates"
+}
