@@ -5,7 +5,7 @@
   "description": "My Electron application description",
   "main": ".vite/build/main.js",
   "scripts": {
-    "prestart": "taskkill /F /T /IM electron.exe >nul 2>&1 & exit 0",
+    "prestart": "taskkill /F /T /IM electron.exe >nul 2>&1 & node tools/check-voice.mjs",
     "start": "electron-forge start",
     "start:debug": "set ELECTRON_ENABLE_LOGGING=1&& set ELECTRON_ENABLE_STACK_DUMPING=1&& electron-forge start",
     "package": "electron-forge package",
