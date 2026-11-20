@@ -13,10 +13,18 @@ import { mountDots } from './dots.js';
 import { ANIM } from './anim.js';
 import { cookbookHints } from './cookbook.js';
 import { parseIntent, FAST_MIN, splitTask, isFileTask } from './fast/intent.js';
+import { needsFresh, freshQuery } from './fast/fresh.js';
 import { controlsHelp } from './fast/system.js';
 import { cacheLookup, cacheStore, cacheKey } from './fast/cache.js';
 import { buildRouterMessages, validateRouterReply, fileRules } from './fast/router.js';
 import { makeConvo, rowsFrom } from './convo.js';
+import { parseChatSend, nameFits } from './fast/assist.js';
+import { parseMedia, parseOverview } from './fast/siri.js';
+import { toolCardFor, ringCard, playerControl, onActive, stopRings, syncTimers, style as cardStyle } from './toolcards.js';
+import { initVoice } from './voice/ui.js';
+import { makeLive } from './ui/live.jsx';
+// hover button on a card in the chat: send it to the floating window (bottom-right, stays on top)
+const popOut = (data) => ({ onOpen: () => window.api.toolFloat?.(data), openLabel: 'Pop out' });
 import { fitFast, byNumbers, dropFolderMap } from './fast/fit.js';
 import { buildScriptMessages, extractScript } from './fast/scriptFallback.js';
 applyAccent();
@@ -24,7 +32,7 @@ autoEnhanceSelects(); // every <select> / <input list> gets the app's own themed
 
 
 // Serious commands (deleting, system/registry/network changes, killing things) are never replayed from memory: the AI re-checks them every time.
-const serious = (c) => isRisky(c) || /\b(del|erase|rmdir|rd|format|diskpart|reg\s+(add|delete|import)|shutdown|taskkill|sc\s+(delete|stop|config)|net\s+user|icacls|takeown|netsh|bcdedit|schtasks|Remove-Item|Set-ExecutionPolicy|Stop-Process|Stop-Service|Clear-Disk)\b/i.test(c);
+const serious = (c) => isRisky(c) || /\bformat\b/i.test(c); // isRisky skips "format-" (Format-Table); memory replay stays stricter
 
 const SYSTEM = `You are Genisys, an autonomous Windows executor and coder. The user's home is %USERPROFILE%.
 Each reply MUST be ONE JSON object and nothing else:
@@ -57,6 +65,16 @@ Be FAST and SMART (every extra step costs the user real seconds):
 - OPENING WITH A SPECIFIC APP ("play it in PotPlayer", "open in VLC"): add "with": "potplayer" to the find (or {"app":{"name":"potplayer","file":"<path>"}} when you already know the path). The app looks the program up in the Start Menu and Program Files itself. NEVER write Program Files paths from memory and never run "if exist" chains to hunt for an app. If the reply says the app is not installed, tell the user and offer the default player as an option.
 - To just open an app ("open spotify", "open notepad"): {"app":{"name":"spotify"}} (or start "" "<name>" for built-in tools like notepad, calc, explorer).
 - OPENING A SITE IN A BROWSER PROFILE ("open gmail in my Kevin chrome profile", "in my work profile"): use "do": {"action":"open_url","params":{"url":"https://mail.google.com","browser":"chrome","profile":"Kevin"}} (or search_web with "profile"). The app reads Chrome's profile list (see "Chrome profiles" in PC CONTEXT) and starts Chrome with that profile, so the user is already signed in. NEVER launch plain chrome.exe for a profile request: that opens a fresh, logged-out profile. If the reply lists the profiles, pick the closest name or ask.
+- "IT / THAT / THIS" is the subject of the LAST turn: the file that was just created, listed or opened (see MOST RECENT LISTING in the conversation block). "its not opening / it won't open / why" about a file means: CHECK THAT FILE (does it exist, size > 0, the first bytes: a real PDF starts with %PDF-, a Word/Excel/zip file starts with PK) and say what is wrong. Do NOT open an unrelated site or app, and do not repeat an earlier task.
+- Never create a .docx/.xlsx/.pptx by writing text into it: that makes a broken file. For Word/Excel use a real tool (Word/Excel COM from PowerShell) or say it cannot be done here.
+- PDF: write a .pdf with "file" whose content is the READABLE TEXT only ("# Title", "## Heading", "- item", blank line between paragraphs). The app turns it into a real PDF. NEVER write PDF syntax (%PDF, obj, stream) or HTML into it.
+- NEVER say a file "was already deleted / already exists / is done" from the conversation alone: earlier turns can be wrong. Check the disk first ("find" its exact name), then act on what you find. To delete, find the exact name the user said; a folder is never "the X file".
+- CHANGING A FILE THAT EXISTS ("add X to that pdf", "update the list"): read it first with read_file, then write the WHOLE new version to the SAME path and SAME type (a .pdf stays a .pdf). Never save the change as a new file of another type (.html, .txt) unless the user asks.
+- EVERYDAY ASKS (any PC, never assume which apps exist): time in a place → "do" world_time {place} (never work times out yourself). Reminders/timers → "do" remind {at: Unix ms from the PC CONTEXT time, text}. Music → "do" play_music {query, app only if the user named one}: it uses the user's own songs or the apps this PC has; never assume Spotify. Timers → "do" timer {op:set|status|cancel, seconds, label}. Alarms ("wake me up at 6") → "do" alarm {op:set|list|cancel, at: Unix ms}. Stopwatch → "do" stopwatch {op:start|stop|status|reset}. Notes → "do" note {op:add|show, text}. Coin/dice/random number → "do" quick. Answer like a phone assistant: one short sentence, then do it; never say you can't set timers, alarms or reminders.
+- FAVORITES (see "User favorites" in PC CONTEXT): they fill in what the request leaves out. "search cats" or "open my email" use the favorite browser/profile/app. Whatever the user NAMES in the request (an app, a browser, a profile) always wins and the favorite is skipped. Never guess a browser profile: use the exact name the user said (match it to the "Chrome profiles" list, typos allowed), else the favorite profile, else ask. NEVER pick a profile just because it is first or listed.
+- "open gmail" / "search gmail" / "go to my inbox" means OPEN the Gmail inbox (https://mail.google.com/mail/u/0/#inbox), not a Google search for the word gmail.
+- SENDING ON WHATSAPP / TELEGRAM / SIGNAL / DISCORD / SLACK: use "do" chat_send {app, to, path?, text?}: it opens the contact's chat in the desktop app and attaches the file (full path from the conversation) or types the text. It can NOT send: say "it's ready, press Send". Never use wa.me links (they need a phone number and cannot attach files). For another chat app, write a PowerShell script (focus the window, search the contact with its shortcut, paste with Set-Clipboard -Path + ^v) and never press the final Enter. Do the steps in order: first make/edit the file, then send it.
+- WRITING AN EMAIL: use "do" compose_email {to, subject, body, profile?}. It only opens a Gmail DRAFT; it can NOT send. Never say "sent": say "opened the draft, press Send". Show the user the subject and body you wrote. The recipient must be a real address the user gave (or you found); never invent one or use example.com, ask for it. If the user says "make them random", still ask for the recipient unless they gave one.
 - Desktop apps that may not exist ("ChatGPT desktop app"): look once ("find"/"app"); if it is not installed, say so and open the website instead of searching again and again.
 - NEVER TRUST MEMORY FOR THE STATE OF FILES. Files change outside this app (the user can see them in File Explorer). Never say something "is already deleted / gone / in the Recycle Bin / still there" from an earlier turn: check NOW (a fresh "find", or cmd Test-Path / dir) and say what you saw. If the user's latest listing shows a file, it EXISTS, whatever you did before.
 - "delete them / those / it / these": means the rows of the MOST RECENT listing in the conversation, nothing older. Trash exactly those paths. If it is unclear which items are meant, ask with options; never answer that they are already gone.
@@ -102,10 +120,18 @@ async function promptExtras(task, P) {
   const tone = PERSONALITIES[P.personality] || PERSONALITIES.chill;
   const parts = [`PERSONALITY (applies to "say" and "ask" only): ${tone}${P.emoji ? '' : ' Never use emojis.'}${P.custom ? `\nUser's own instructions: ${P.custom}` : ''}`];
   const me = await window.api.db('listProfile');
-  if (me.length) parts.push(`ABOUT THE USER (use it to personalize choices):\n${me.slice(-30).map((p) => `- ${p.kind}: ${p.text}`).join('\n')}`);
+  const habits = (await (window.api.habits?.() || Promise.resolve([])).catch(() => [])) || [];
+  if (habits.length) parts.push(`HABITS (counted from what the user does in Genisys; use them to choose well, e.g. their usual player or contact):\n${habits.map((h) => `- ${h}`).join('\n')}`);
+  if (me.length) parts.push(`ABOUT THE USER (background only: use it to CHOOSE well, e.g. their usual app, contact or place; NEVER add details they did not ask for, like a trip, a name or a title in a file):\n${me.slice(-30).map((p) => `- ${p.kind}: ${p.text}`).join('\n')}`);
   const mem = await window.api.db('findMemory', task, 3);
   const safeMem = mem.filter((m) => !m.cmds.some(serious));
   if (safeMem.length) parts.push(`COMMANDS THAT WORKED BEFORE for similar tasks (reuse when they fit):\n${safeMem.map((m) => `- "${m.task}" → ${m.cmds.join(' && ')}`).join('\n')}`);
+  const apps = await window.api.db('appHints', task).catch(() => []);
+  for (const h of apps) {
+    const lines = [...h.mem.filter((m) => !m.cmds.some(serious)).map((m) => `- "${m.task}" → ${m.cmds.join(' && ')}`),
+      ...h.scripts.filter((s) => !serious(s.script)).map((s) => `- "${s.command}" → script:\n${s.script.slice(0, 1200)}`)];
+    if (lines.length) parts.push(`WAYS THAT WORKED IN ${h.app.toUpperCase()} on this PC (reuse and adapt them, e.g. another contact or file):\n${lines.join('\n')}`);
+  }
   return parts.join('\n\n');
 }
 
@@ -172,10 +198,10 @@ addEventListener('unhandledrejection', (e) => window.api.reportError('renderer',
 // First launch: the setup (account, name, theme, a few questions) covers the main window until it is done.
 if (mode === 'main') window.api.cloud('state').then((s) => { if (!s.onboarded) import('./onboarding.js').then((m) => m.startOnboarding()); });
 
-// macOS-style centered title: "genisys — agent-3 — 520x330". The name is editable (click it).
+// Window title: "Genisys" (agent windows: "Genisys · agent-3"). The name is editable (click it).
 let winName = mode === 'main' ? 'main' : (q.get('title') || mode).replace('~/', '');
 const setTitle = () => {
-  $('wtitle').textContent = `genisys — ${winName} — ${innerWidth}x${innerHeight}`;
+  $('wtitle').textContent = mode === 'main' ? 'Genisys' : `Genisys · ${winName}`; // plain title (no window size)
   $('host').textContent = `${winName}@local`;
   if (mode !== 'main') document.title = winName;
 };
@@ -212,7 +238,8 @@ $('host').onclick = () => {
 agent(); // the main window is an agent too
 setTitle();
 // Tell main the first layout is done (two animation frames), so it can show the window without flashing a half-built page.
-requestAnimationFrame(() => requestAnimationFrame(() => window.api.pageReady?.()));
+// "laid out, show me": after two frames, or a moment later (a hidden window may never get an animation frame)
+{ let sent = false; const ready = () => { if (!sent) { sent = true; window.api.pageReady?.(); } }; requestAnimationFrame(() => requestAnimationFrame(ready)); setTimeout(ready, 60); }
 
 // Window-local keys; the Ctrl+Alt ones are registered system-wide in main.js.
 // Many laptops send F1 as "mute" unless Fn is held, so Ctrl+/ and "?" (in an empty box) open help too.
@@ -246,7 +273,6 @@ const badgeClass = (s) => (/done|ready/.test(s) ? 'b-done' : /wait|answer/.test(
 
 function launcher() {
   $('add').onclick = () => window.api.open('agent');
-  $('script').onclick = () => window.api.open('script');
   window.api.onAgents((list) => {
     const bar = $('agents');
     bar.replaceChildren();
@@ -288,11 +314,16 @@ function agent() {
   // Conversation memory of this window (convo.js): saved in the database, reloaded for 6 hours, given to the router and the AI.
   const CID = mode === 'main' ? 'main' : `${mode}-${Number.isFinite(id) && id ? id : title}`;
   const convo = makeConvo();
+  // the chat session (Chats page): the last one of this window goes on if it is recent (its memory is reloaded too),
+  // "New chat" starts another, "Continue this chat" switches back to an old one
+  const newSid = () => `${CID}-${Date.now()}`;
+  let SID = newSid();
+  window.api.db('lastSession', CID).then((s) => { if (s && s.ts > Date.now() - 6 * 3600e3 && !convo.size()) SID = s.sid; }).catch(() => {});
   window.api.db('convoRecent', CID, 12, Date.now() - 6 * 3600e3).then((rows) => { if (!convo.size()) convo.load(rows); }).catch(() => {});
-  const noteTurn = (t) => { const n = convo.add(t); if (n) window.api.db('convoAdd', CID, n).catch(() => {}); };
+  const noteTurn = (t) => { const n = convo.add(t); if (n) { window.api.db('convoAdd', CID, { ...n, sid: SID }).catch(() => {}); window.api.learnTick?.(); } };
   const log = $('log');
   const input = $('input');
-  const foot = $('form').parentElement;
+  const foot = $('form').closest('.foot');
   // Message scroller: new output follows only while you're at the bottom; scrolled up to read, a "Jump to latest" pill appears.
   let pinned = true;
   const jump = document.createElement('button');
@@ -352,7 +383,7 @@ function agent() {
     ed.el.addEventListener('toggle-output', () => document.body.classList.toggle('log-hidden'));
     document.addEventListener('keydown', (e) => { if (e.ctrlKey && e.key.toLowerCase() === 'j') { e.preventDefault(); document.body.classList.toggle('log-hidden'); } });
   }
-  input.placeholder = mode === 'script' ? 'describe a script…' : 'tell me what to do…';
+  input.placeholder = mode === 'script' ? 'describe a script…' : 'Ask Genisys anything…';
   const TEAM = `
 AGENT WINDOWS (teamwork): the app can open extra agent windows that work in parallel while you manage them. When the user asks for several agents or parallel work ("open 5 agents to...", "use 3 agents", "split this between agents") or gives a big job with clearly independent parts, reply with "delegate": [{"task": "<complete, self-contained instructions for ONE agent>", "web": true|false}, ...] and set done=true with no cmd. Use exactly N items when the user said N (max 8), otherwise 2-5. Agents cannot see this chat, so every task must carry all the details it needs (names, paths, goal, what to report back) and the parts must not overlap (different files, sites, topics). Set "web": true for jobs that mostly browse the internet. "say" is one short line naming what each agent does.
 If the work is small or can't be split (one quick action, one lookup, one file), DO NOT delegate: say "I'm gonna do it myself, it's kinda simple tho" (in your current tone) and do it yourself with the usual actions.`;
@@ -369,7 +400,13 @@ BUILT-IN TOOLS (same "do"): {"action":"browse_files","params":{"in":"videos|down
   let waitingAnswer = null; // the options of the AI's last question, while it waits for the user's answer
   let running = false;
   let abort = null; // rejects the in-flight AI wait when the user presses stop
-  const setRun = (v) => { running = v; $('form').classList.toggle('busy', v); $('send').title = v ? 'Stop' : 'Send (Enter)'; };
+  let voice = null; // voice input + spoken answers (src/voice/ui.js), set up with the input bar below
+  // Alt+Space runner: the results panel opens a moment after sending, so an instant tool (timer, alarm…) never flashes it
+  let runnerOpenTimer = 0;
+  const openRunnerPanel = () => { clearTimeout(runnerOpenTimer); if (mode === 'runner' && !document.body.classList.contains('open')) { document.body.classList.add('open'); window.api.runnerOpen(); } };
+  // the runner hides once the answer has been read out (hiding reloads the page, which would cut the speech)
+  const hideRunnerSoon = () => setTimeout(function hide() { if (voice?.speaking) setTimeout(hide, 300); else window.api.hideRunner(); }, 250);
+  const setRun = (v) => { const was = running; running = v; $('form').classList.toggle('busy', v); $('send').title = v ? 'Stop' : 'Send (Enter)'; if (was && !v) voice?.ended(); };
   let stopped = false;
 
   const setSt = (s) => {
@@ -380,139 +417,45 @@ BUILT-IN TOOLS (same "do"): {"action":"browse_files","params":{"in":"videos|down
   // Live activity card = the agent's trace (chain of thought): a header + an animated step tree (plan steps are folders,
   // actions are their children). A step's output (files found, sites, command output, the model's reasoning) sits one
   // level down. When the task ends the card folds into one summary line ("Done in 4 steps · 6.2s") that reopens.
-  const live = (() => {
-    let el = null, root = null, tEl = null, t0 = 0, timer = 0, cur = null, groups = [], curGroup = null;
-    const fmt = (ms) => `${(ms / 1000).toFixed(ms < 10000 ? 1 : 0)}s`;
-    const code = (t) => { const c = document.createElement('code'); c.textContent = t; return c; };
-    const finish = (leaf, ok = true) => {
-      if (!leaf) return;
-      const li = leaf.li; li.classList.remove('on'); li.classList.add(ok ? 'ok' : 'bad');
-      if (leaf.think) { li.querySelector('b').textContent = 'Thought'; li.querySelector('.det').replaceChildren(); }
-      leaf.state = ok ? 'done' : 'bad'; leaf.ms = Date.now() - leaf.t0; li.querySelector('.ms').textContent = fmt(leaf.ms);
-    };
-    const kidsOf = () => (curGroup ? curGroup.ul : root);
-    const open = (g, v) => { g.li.classList.toggle('open', v); };
-    return {
-      el: () => el,
-      slot: () => el?.querySelector('.lorb'),
-      start(task = '') {
-        if (el) { clearInterval(timer); el.remove(); el = null; cur = null; } // a card still open (router try): replaced
-        groups = []; curGroup = null;
-        el = document.createElement('div');
-        el.className = 'live';
-        el.dataset.phase = 'working';
-        el.innerHTML = `<div class="lhead"><span class="lorb orb-slot"></span><button type="button" class="ltask" title="Show / hide the steps"><i class="chev"></i><span class="lt"></span></button><span class="ldesc"></span><span class="ltime">0.0s</span><button type="button" class="lstop" title="Stop (Esc)"><i></i>stop</button></div>
-          <div class="lphase"><em>working</em><span class="dots"><i></i><i></i><i></i></span></div>
-          <div class="lbody"><ul class="tree"></ul></div><div class="shimmer"></div>`;
-        el.querySelector('.lt').textContent = task;
-        el.title = task;
-        el.querySelector('.ltask').onclick = () => el.classList.toggle('collapsed');
-        el.querySelector('.lstop').onclick = () => $('stop').click();
-        root = el.querySelector('.tree'); tEl = el.querySelector('.ltime'); t0 = Date.now();
-        timer = setInterval(() => {
-          tEl.textContent = fmt(Date.now() - t0);
-          if (cur) cur.li.querySelector('.ms').textContent = fmt(Date.now() - cur.t0);
-        }, 200);
-        log.append(el); toEnd();
-      },
-      // Plan steps become folders; later actions nest under the step being worked on.
-      plan(items) {
-        if (!el) return;
-        groups = items.map((text) => {
-          const li = document.createElement('li');
-          li.className = 'grp todo';
-          li.innerHTML = '<div class="grow"><i class="ind"></i><span class="gt"></span><span class="gn"></span><i class="chev"></i></div><div class="kids"><ul></ul></div>';
-          li.querySelector('.gt').textContent = text;
-          const g = { text, state: 'todo', kids: [], li, ul: li.querySelector('ul') };
-          li.querySelector('.grow').onclick = () => open(g, !li.classList.contains('open'));
-          root.append(li);
-          return g;
-        });
-      },
-      focus(n) {
-        if (!groups.length) return;
-        const idx = Number.isFinite(n) ? Math.max(1, Math.min(groups.length, n)) : groups.length + 1;
-        groups.forEach((g, i) => {
-          g.state = i + 1 < idx ? 'done' : i + 1 === idx ? 'now' : 'todo';
-          g.li.classList.toggle('ok', g.state === 'done'); g.li.classList.toggle('on', g.state === 'now'); g.li.classList.toggle('todo', g.state === 'todo');
-          open(g, g.state === 'now');
-        });
-        curGroup = groups[idx - 1] || null;
-        const done = groups.filter((g) => g.state === 'done').length;
-        el.querySelector('.ldesc').textContent = `${done} of ${groups.length} done`;
-      },
-      // Mark the current line done and start a new animated one.
-      step(label, detail = '') {
-        if (!el) return;
-        const think = /^(thinking|understanding)/.test(label);
-        const phase = think ? 'thinking' : 'working';
-        el.dataset.phase = phase;
-        el.querySelector('.lphase em').textContent = phase;
-        // A "Thinking" step that ended at once with nothing in it is noise ("Thought 0.0s"): drop it.
-        if (cur?.think && Date.now() - cur.t0 < 400 && !cur.li.querySelector('.lout')) { cur.li.remove(); cur = null; }
-        finish(cur);
-        const li = document.createElement('li');
-        li.className = 'leaf on';
-        li.innerHTML = '<i class="ind"></i><span class="lt2"><b></b> <span class="det"></span></span><span class="ms"></span>';
-        li.querySelector('b').textContent = think ? 'Thinking' : label.replace(/^./, (c) => c.toUpperCase());
-        if (think) li.classList.add('think');
-        const d = String(detail).split('\n')[0].slice(0, 90);
-        if (d && !/^thinking/.test(label)) li.querySelector('.det').append(code(d));
-        cur = { li, t0: Date.now(), state: 'now', think, text: `${label}${d ? ` ${d}` : ''}` };
-        const host = kidsOf();
-        host.append(li);
-        if (curGroup) { curGroup.kids.push(cur); curGroup.li.querySelector('.gn').textContent = curGroup.kids.length; }
-        toEnd();
-      },
-      detail(t) { const d = cur?.li.querySelector('.det'); if (d) d.replaceChildren(code(t)); },
-      fail() { finish(cur, false); cur = null; },
-      // Output under the current step (a node or text). The step becomes a button that opens / closes it.
-      out(node, open = true) {
-        if (!cur) return null;
-        const li = cur.li;
-        let box = li.querySelector(':scope > .lout');
-        if (!box) {
-          box = document.createElement('div'); box.className = 'lout';
-          const ch = document.createElement('i'); ch.className = 'chev';
-          li.querySelector('.ms').after(ch);
-          li.append(box); li.classList.add('has');
-          li.onclick = (e) => { if (!e.target.closest('.lout')) li.classList.toggle('open'); };
-        }
-        li.classList.toggle('open', open);
-        if (typeof node === 'string') { const t = document.createElement('div'); t.className = 'lo-t'; t.textContent = node; node = t; }
-        box.append(node);
-        toEnd();
-        return node;
-      },
-      // The model's reasoning ("decided") goes inside its Thinking/Thought step, closed: the answer comes first.
-      reason(t) { if (cur?.think) { const n = document.createElement('div'); n.className = 'lo-t reason'; n.textContent = t; this.out(n, false); return true; } return false; },
-      // For the floating plan widget: plan steps with their actions.
-      snapshot(upTo, end) {
-        const rows = groups.map((g, i) => ({
-          text: g.text, state: i + 1 < upTo ? 'done' : i + 1 === upTo ? (end ? 'todo' : 'now') : 'todo',
-          kids: g.kids.map((k) => ({ text: k.text, state: k.state === 'now' ? (end ? 'todo' : 'now') : k.state === 'bad' ? 'bad' : 'done' })),
-        }));
-        return rows;
-      },
-      hasPlan: () => groups.length > 0,
-      // Fold into the summary line. A turn with no real step (a chat answer) leaves no trace at all.
-      stop(ok = true, label = '') {
-        clearInterval(timer);
-        if (!el) return;
-        finish(cur, ok); cur = null;
-        const n = el.querySelectorAll('li.leaf:not(.think)').length;
-        if (!n) { el.remove(); el = null; return; }
-        tEl.textContent = fmt(Date.now() - t0);
-        el.classList.add('past', 'collapsed'); el.dataset.phase = ok ? 'done' : 'bad';
-        const steps = `${n} step${n === 1 ? '' : 's'}`;
-        el.querySelector('.lt').textContent = label ? `${label} ${steps}` : ok ? `Done in ${steps}` : `Couldn't finish · ${steps}`;
-        el.querySelector('.ltask').setAttribute('aria-expanded', 'false');
-        el.querySelector('.ltask').onclick = () => { const o = el2.classList.toggle('collapsed'); el2.querySelector('.ltask').setAttribute('aria-expanded', !o); };
-        const el2 = el; el = null;
-      },
-    };
-  })();
+  // the AI's work trace (prompt-kit ChainOfThought / Reasoning / Steps + Source, src/ui/Trace.jsx)
+  const live = makeLive({ log, toEnd, onStop: () => $('stop').click(), onOpenLink: (u) => window.api.openPath(u) });
   window.api.onAiProgress?.((t) => { if (DEV) live.detail(t); }); // model/key switching is internal
+  // the live tool follows the user to the floating card when they leave (main window only)
+  if (mode === 'main' || mode === 'runner') {
+    // the command bar (Alt+Space) closes on its own: its music player dies with it, timers / stopwatch live in main and follow
+    onActive((d) => { if (mode === 'runner' && d?.type === 'music') return; window.api.toolActive?.(d); });
+    window.api.onToolCmd?.((cmd) => playerControl(cmd));
+    window.api.onRingStop?.(() => stopRings());
+  }
+  { // every window: timer cards follow the store (paused / resumed / cancelled from anywhere)
+    window.api.onClockChanged?.(() => syncTimers());
+  }
+  // a new version finished downloading in the background: one card with Restart & update / Later (main window only)
+  if (mode === 'main') {
+    let shown = '';
+    const offer = (v) => {
+      if (!v || v === shown) return; shown = v; cardStyle();
+      const card = document.createElement('div'); card.className = 'tcw';
+      const box = document.createElement('div'); box.className = 'tc update-card';
+      const h = document.createElement('div'); h.className = 'tc-h'; h.textContent = 'Update ready';
+      const t = document.createElement('div'); t.className = 'tc-sub'; t.textContent = `Genisys ${v} is downloaded. Restart to use it (takes a few seconds).`;
+      const row = document.createElement('div'); row.className = 'tc-ctrl';
+      const go = document.createElement('button'); go.className = 'tc-btn chat-go'; go.type = 'button'; go.textContent = 'Restart & update';
+      const later = document.createElement('button'); later.className = 'tc-btn'; later.type = 'button'; later.textContent = 'Later';
+      go.onclick = async () => { go.disabled = later.disabled = true; go.textContent = 'Restarting…'; try { await window.api.installUpdate(); } catch { go.disabled = later.disabled = false; go.textContent = 'Restart & update'; t.textContent = "Couldn't start the update. Try again in a moment."; } };
+      later.onclick = () => { card.remove(); };
+      row.append(go, later); box.append(h, t, row); card.append(box);
+      log.append(card); toEnd(true);
+    };
+    window.api.onUpdateReady?.(offer);
+    window.api.updateReady?.().then(offer).catch(() => {});
+  }
+  // a timer / alarm / reminder went off: ring here, in the chat (main sends it to the main window only)
+  window.api.onClockRing?.((r) => {
+    showChat?.();
+    log.append(ringCard(r, { onSnooze: () => window.api.fast('alarm', { op: 'set', at: Date.now() + 9 * 60e3, label: r.text && r.text !== 'Alarm' ? r.text : undefined }, true) }));
+    toEnd(true);
+  });
 
   // The live orb: big on the welcome screen, then it shrinks into the "working" card while a task runs, then into the header.
   const orbOK = (mode === 'main' || mode === 'agent') && ANIM.orb;
@@ -539,6 +482,11 @@ BUILT-IN TOOLS (same "do"): {"action":"browse_files","params":{"in":"videos|down
     orbTo(live.slot());
   };
   const orbIdle = () => { if (!welcome?.isConnected) orbTo($('orb-head')); };
+  // the first message of a chat: the welcome (and its big orb) leaves at once, even when a quick tool answers and no
+  // AI step ever starts (bug: the chat scrolled under a welcome orb that stayed). The orb goes back to the header.
+  const leaveWelcome = () => {
+    if (welcome) { const w = welcome; welcome = null; w.classList.add('gone'); setTimeout(() => w.remove(), 600); orbTo($('orb-head')); }
+  };
   const showWelcome = () => {
     if (!orbOK) return;
     welcome = document.createElement('div');
@@ -553,13 +501,32 @@ BUILT-IN TOOLS (same "do"): {"action":"browse_files","params":{"in":"videos|down
     if (running) { $('newchat').classList.add('shake'); setTimeout(() => $('newchat').classList.remove('shake'), 400); return; }
     history.length = 1;
     convo.clear(); window.api.db('convoClear', CID).catch(() => {});
+    SID = newSid(); // the old chat stays in Chats
     log.replaceChildren(); jump.hidden = true; pinned = true;
     if (!orbOK) print('dim', 'New chat. Tell me what to do on your PC.', '');
+    document.body.classList.remove('chatting');
     showWelcome();
     setSt('ready');
     input.value = ''; input.dispatchEvent(new Event('input'));
     input.focus();
   };
+  // "Continue this chat" (Chats page): that chat's turns come back on screen and into the AI's memory; new turns join it
+  addEventListener('genisys-continue', async (e) => {
+    if (running || mode === 'runner') return;
+    const turns = await window.api.db('sessionTurns', e.detail).catch(() => []);
+    if (!turns.length) return;
+    history.length = 1;
+    convo.clear(); convo.load(turns.slice(-12));
+    SID = turns[0].sid || e.detail;
+    log.replaceChildren(); jump.hidden = true; pinned = true;
+    orbToLive();
+    document.body.classList.add('chatting');
+    print('dim', `Continuing "${String(turns[0].task).slice(0, 60)}" · started ${new Date(turns[0].ts).toLocaleString()}`, '');
+    for (const t of turns) { print('user', t.task, '$'); if (t.say) print('ai', t.say, '›'); }
+    toEnd(true);
+    setSt('ready');
+    input.focus();
+  });
   // TextGenerateEffect (port of the shadcn/ui component): each word fades in from a blur, one after another
   // (default there: stagger 0.2s, duration 0.5s, blur 10px). It plays once, only on "special" answers, then the words
   // are turned back into plain text. **word** / `word` are bold; when the effect plays they also get an underline.
@@ -667,6 +634,23 @@ BUILT-IN TOOLS (same "do"): {"action":"browse_files","params":{"in":"videos|down
     return k;
   };
   const showChat = () => document.body.classList.remove('log-hidden'); // Script Writer: a question or a problem must be seen
+  // under each of your messages, on hover: Retry (send it again), Copy, Edit (back into the box to change and send)
+  const UA = {
+    retry: '<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/>',
+    copy: '<rect width="12" height="12" x="8" y="8" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>',
+    edit: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>',
+    ok: '<path d="m5 12 5 5 9-10"/>',
+  };
+  const userActions = (text) => {
+    const bar = document.createElement('div'); bar.className = 'uact';
+    const mk = (ic, label, fn) => { const b = document.createElement('button'); b.type = 'button'; b.className = 'ua'; b.title = label; b.setAttribute('aria-label', label); b.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">${UA[ic]}</svg>`; b.onclick = (e) => { e.stopPropagation(); fn(b); }; return b; };
+    bar.append(
+      mk('retry', 'Retry', () => { if (running) return; input.value = text; input.dispatchEvent(new Event('input')); $('form').requestSubmit(); }),
+      mk('copy', 'Copy', async (b) => { try { await navigator.clipboard.writeText(text); const was = b.innerHTML; b.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">${UA.ok}</svg>`; setTimeout(() => { b.innerHTML = was; }, 1200); } catch {} }),
+      mk('edit', 'Edit', () => { input.value = text; input.dispatchEvent(new Event('input')); input.focus(); input.setSelectionRange?.(text.length, text.length); }),
+    );
+    return bar;
+  };
   const print = (cls, text, label = '') => {
     if (cls === 'ask' || cls === 'err') showChat();
     const d = document.createElement('div');
@@ -683,7 +667,9 @@ BUILT-IN TOOLS (same "do"): {"action":"browse_files","params":{"in":"videos|down
       }
       revealNext = false;
     } else if (cls === 'ai' && revealNext) focusReveal(d.lastChild, text); else if (cls === 'ai') focusReveal(d.lastChild, text, true); else d.lastChild.textContent = text;
+    if (/^(?:ai|out|ask|err)$/.test(cls)) voice?.note(text);
     if (cls === 'ai') { revealNext = false; addCitations(d.lastChild, cites, { open: (u) => window.api.openPath(u) }); }
+    if (cls === 'user') d.append(userActions(String(text)));
     log.append(d);
     toEnd(cls === 'user' || cls === 'ask' || cls === 'err'); // your own message, a question or a problem is always brought into view
     return d;
@@ -752,7 +738,7 @@ BUILT-IN TOOLS (same "do"): {"action":"browse_files","params":{"in":"videos|down
       if (kind === 'search') {
         const res = r.results || [];
         const num = res.map((x) => { const at = cites.findIndex((c) => c.url === x.url); return at >= 0 ? at + 1 : cites.push({ url: x.url, title: x.title, snippet: x.snippet }); });
-        if (res.length) live.out(sourceChips(res, { open: (u) => window.api.openPath(u) })); else live.out('no results');
+        live.sources(res); // prompt-kit Source chips (hover = title and snippet)
         return `Web search "${q}":\n${res.map((x, i) => `[${num[i]}] ${x.title} — ${x.url}\n   ${x.snippet}`).join('\n') || 'no results'}${(r.pages || []).map((p) => `\n\nPAGE ${p.url} "${p.title}":\n${p.text}`).join('')}\n\n(The top pages are already included above: answer now if you can.)`;
       }
       live.out(`${r.title || r.url} · ${r.text.length} chars`);
@@ -776,9 +762,8 @@ BUILT-IN TOOLS (same "do"): {"action":"browse_files","params":{"in":"videos|down
     if (!(await ask('Run the remembered command?', { code: m.cmds.join('\n') }))) return false;
     let worked = true;
     for (const c of m.cmds) {
-      if (isRisky(c) && !(await ask('Run this command?', { code: c, desc: 'This changes things on your PC.', danger: true }))) { worked = false; break; }
       setSt('running');
-      const { code, out } = await window.api.run(c);
+      const { code, out } = await window.api.run(c); // risky commands are confirmed by the main process
       if (out.trim()) print('out', out.trim(), 'out');
       if (code) { print('err', `exit ${code}`, ''); worked = false; break; }
     }
@@ -789,6 +774,10 @@ BUILT-IN TOOLS (same "do"): {"action":"browse_files","params":{"in":"videos|down
 
   // Exact repeat of a saved task: rerun its saved commands, 0 AI requests. Falls through to the AI on failure.
   async function reuseSaved(task) {
+    // "play potplayer" / "pause the music": control the player that is open (fast path), never replay a saved "start app.exe"
+    if (parseMedia(task)) return false;
+    // file questions and deletes are answered from the files of this chat (fast path); an old saved command may point at a file that is gone
+    if (/^\s*(?:what(?:'s|\s+is)\s+(?:in|inside)|read|show\s+me|delete|remove|trash|erase)\b/i.test(task)) return false;
     const m = await window.api.db('findExact', task);
     if (!m) return false;
     if (m.cmds.some(serious)) return false; // serious commands always go through the AI
@@ -799,11 +788,9 @@ BUILT-IN TOOLS (same "do"): {"action":"browse_files","params":{"in":"videos|down
     again.className = 'btn'; again.textContent = 'ask AI instead';
     again.onclick = () => { if (!running) loop(`! ${task}`); };
     row.lastChild.append(' ', again);
-    for (const c of m.cmds) {
-      if (isRisky(c) && !(await ask('Run this command?', { code: c, desc: 'This changes things on your PC.', danger: true }))) { live.stop(false); await window.api.db('useMemory', m.id, false); return false; }
-    }
     setSt('running');
-    const { code, out } = await window.api.runBat(m.id);
+    const { code, out } = await window.api.runBat(m.id); // the main process confirms a risky .bat
+    if (code && out === 'cancelled by user') { live.stop(false); return false; }
     if (out.trim()) print('out', out.trim(), 'out');
     if (code) { live.stop(false); print('err', `exit ${code}, asking AI instead`, ''); await window.api.db('useMemory', m.id, false); return false; }
     await window.api.db('useMemory', m.id, true);
@@ -817,6 +804,8 @@ BUILT-IN TOOLS (same "do"): {"action":"browse_files","params":{"in":"videos|down
   let fastCtx = null;
   const getFastCtx = async () => (fastCtx ||= await window.api.fastSpecs().then((r) => ({ ...r, reg: new Map(r.specs.map((x) => [x.name, x])) })));
   const OPENERS = new Set(['open_app', 'open_url', 'search_web', 'open_folder', 'open_file', 'open_path']);
+  // live tools that keep running: from the runner they go straight to the small floating card (not into the results panel)
+  const FLOATERS = new Set(['timer', 'stopwatch', 'alarms', 'music']);
   const CHAT = /^(what|why|how|who|when|where|which|tell|explain|write|summari[sz]e|translate|hi|hello|hey|thanks?)\b|\?\s*$/i;
   const ANSWER = /\band\s+(?:tell|show|see|list|give)\b|\b(?:latest|newest|recent(?:ly)?|how many|which one)\b/i; // wants an answer back, not one action
   const host = (u) => { try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return u; } };
@@ -837,17 +826,22 @@ BUILT-IN TOOLS (same "do"): {"action":"browse_files","params":{"in":"videos|down
     try { sp = await getFastCtx(); } catch { return done(false); }
     window.api.timing('start');
     const record = (route, action, ok, extra = {}, ms = performance.now() - F0) => window.api.timing('log', { text: task, mode: 'new', route, action, ok, modelCalls: st.calls, steps: 1, totalMs: Math.round(ms), stages: S, ...extra }).catch(() => {});
+    let floated = false; // a live tool card went to the floating window (runner)
     const finish = async (route, action, ok, extra = {}, ms = performance.now() - F0) => {
       if (ok) print('done', DEV ? `${(ms / 1000).toFixed(2)}s · ${route}` : `done in ${(ms / 1000).toFixed(1)}s`, 'done');
       await window.api.db('logTask', title, task, 1, ms / 1000, ok);
       await record(route, action, ok, extra, ms);
       setSt(ok ? 'done' : 'error'); setRun(false);
-      if (ok && mode === 'runner' && OPENERS.has(action)) setTimeout(() => window.api.hideRunner(), 250); // runner bar hides after window-opening commands
+      if (ok && mode === 'runner' && (OPENERS.has(action) || floated)) hideRunnerSoon(); // runner bar hides after window-opening commands and floated tools
     };
     const store = async (a, p) => { if (convo.dependsOn(p)) return; try { await cacheStore(window.api.db, task, a, p, sp.reg); } catch {} }; // an answer built from "it" (a path from this chat) is never saved for the next "how large is it"
     // Run one action; destructive ones are confirmed first, showing exactly what will happen.
     const exec = async (action, params) => {
       let t = performance.now();
+      // "pause / next song" go to Genisys's own music player when it is the one playing
+      if (action === 'pc' && playerControl(params?.do)) return { status: 'done', message: { play_pause: 'OK.', stop_media: 'Stopped.', next_track: 'Next song.', previous_track: 'Previous song.' }[params.do] || 'OK.' };
+      // "pause the music" with no app named, while Genisys's own player plays: that is the one
+      if (action === 'media' && !params?.app && playerControl({ play: 'play_pause', pause: 'play_pause', toggle: 'play_pause', next: 'next_track', prev: 'previous_track' }[params?.op], params?.op)) return { status: 'done', message: { play: 'Playing.', pause: 'Paused.', toggle: 'OK.', next: 'Next song.', prev: 'Previous song.' }[params.op] || 'OK.' };
       let r = await window.api.fast(action, params);
       mark('exec', t);
       if (r.status === 'confirm') {
@@ -864,9 +858,12 @@ BUILT-IN TOOLS (same "do"): {"action":"browse_files","params":{"in":"videos|down
       if (r.status === 'done') { // only shown when it really did something (a failed try falls through to the AI quietly)
         print('cmd', describe(action, params), route);
         if (r.stats?.length) log.append(statCards(r.stats));
-        if (r.table) { log.append(dataTable(r.table, { open: (f) => window.api.openPath(f) })); toEnd(); } else print('out', r.message, route);
+        const tc = r.card && toolCardFor(r.card, popOut(r.card)); // timer, stopwatch, alarm, clock, coin… each has its own live card
+        if (tc && mode === 'runner' && FLOATERS.has(r.card.type)) { clearTimeout(runnerOpenTimer); window.api.toolFloat(r.card); floated = true; }
+        else if (tc) { if (mode === 'runner') { openRunnerPanel(); tc.querySelector('.tc')?.classList.add('tc-small'); } log.append(tc); toEnd(); } else if (r.table) { log.append(dataTable(r.table, { open: (f) => window.api.openPath(f) })); toEnd(); } else print('out', r.message, route);
+        voice?.note(r.message, r.card);
         if (route !== 'cache') await store(r.resolved?.action || action, r.resolved?.params || params);
-        noteTurn({ task, route, action, params, say: r.message, rows: rowsFrom(r.data, r.table?.paths), n: String(r.data || '').split('\n').filter((l) => l && !l.startsWith('…')).length });
+        noteTurn({ task, route, action, params, say: r.message, rows: r.paths?.length ? r.paths.slice(0, 10).map((p) => ({ text: `${baseName(p)} | ${action}`, path: p })) : rowsFrom(r.data, r.table?.paths), n: r.paths?.length || String(r.data || '').split('\n').filter((l) => l && !l.startsWith('…')).length });
         await finish(route, action, true, { answer: r.table ? `${r.message}\n${r.data || ''}` : r.message, params });
         return true;
       }
@@ -880,7 +877,7 @@ BUILT-IN TOOLS (same "do"): {"action":"browse_files","params":{"in":"videos|down
             setRun(true); setSt('running');
             const t = performance.now();
             const rr = await exec(o.action, o.params);
-            if (rr.status === 'done') { print('out', rr.message, 'out'); await store(o.action, o.params); await finish('fast', action, true, { result: 'chosen' }, before + performance.now() - t); }
+            if (rr.status === 'done') { const tc = rr.card && toolCardFor(rr.card, popOut(rr.card)); if (tc) { log.append(tc); toEnd(); } else print('out', rr.message, 'out'); if (o.action !== 'alarm') await store(o.action, o.params); await finish('fast', action, true, { result: 'chosen' }, before + performance.now() - t); }
             else { print('err', rr.reason || 'could not open it', ''); await finish('fast', action, false, { result: 'choice failed' }, before + performance.now() - t); }
           })();
         } });
@@ -896,6 +893,38 @@ BUILT-IN TOOLS (same "do"): {"action":"browse_files","params":{"in":"videos|down
 
     // 1. fast path: the code understands it, zero model calls. It runs BEFORE the cache so a smarter parser is never
     //    shadowed by an answer saved under the same words (the cache remembers what the AI decided, not what the code knows).
+    // "open it / open that": the one file just listed or created, opened directly.
+    const oref = convo.openRef(task);
+    if (oref) return done(await handle('fast', 'open_path', { path: oref.path }));
+    // "delete the genisys todo file": a file this chat made or showed, by name, before any search of the PC (still asks first)
+    { const dm = /^\s*(?:delete|remove|trash|erase)\s+(?:the\s+|my\s+|that\s+)?(.+?)(?:\s+(file|folder|document|pdf|doc))?\s*$/i.exec(task);
+      if (dm) {
+        const hit = convo.knownPaths().filter((p) => nameFits(task, p));
+        if (hit.length === 1) return done(await handle('fast', 'delete_file', { path: hit[0] }));
+      } }
+    // "what is in the packing list file": a file this chat made or showed, by its name, read here (no AI, no search)
+    { const rm = /^\s*(?:what(?:'s|\s+is)\s+(?:in|inside)|read(?:\s+me)?|show\s+me(?:\s+what'?s\s+in)?)\s+(?:the\s+|my\s+)?(.+?)\s*\??\s*$/i.exec(task);
+      if (rm && !/^(?:it|that|this)\b/i.test(rm[1])) { const hit = convo.knownPaths().filter((p) => /\.\w{1,5}$/.test(p) && nameFits(rm[1], p)); if (hit.length === 1) return done(await handle('fast', 'read_file', { path: hit[0] })); } }
+    // "what's in that file" / "read it" right after a file was made or shown: read THAT file (never list the whole PC)
+    if (/^\s*(?:what(?:'s|\s+is)\s+(?:in|inside)|read|show\s+me(?:\s+what'?s\s+in)?|tell\s+me\s+what'?s\s+in)\s+(?:it|that|this|the)\s*(?:file|doc|document|pdf|note|list|text)?\s*\??\s*$/i.test(task)) {
+      const rows = (convo.latestListing()?.rows || []).filter((r) => r.path && /\.\w{1,5}$/.test(r.path));
+      if (rows.length === 1) return done(await handle('fast', 'read_file', { path: rows[0].path }));
+    }
+    // "play <song>" right after a list of songs: that exact song, in Genisys's own player, no slow search across the PC
+    { const pm = /^\s*(?:play|listen to|put on)\s+(.+?)\s*$/i.exec(task);
+      if (pm) {
+        const k = (s) => String(s).toLowerCase().replace(/\.\w{2,4}$/, '').replace(/\((?:m4a|mp3)[ _]?\d+k\)/g, '').replace(/[^a-z0-9]+/g, '');
+        const want = k(pm[1]);
+        const rows = (convo.latestListing()?.rows || []).filter((r) => r.path && /\.(mp3|m4a|aac|wav|flac|ogg|opus|wma)$/i.test(r.path));
+        const hit = want.length >= 4 && rows.find((r) => { const n = k(r.path.split(/[\\/]/).pop()); return n === want || n.startsWith(want) || (want.length >= 12 && n.includes(want)); });
+        if (hit) return done(await handle('fast', 'play_music', { path: hit.path }));
+      } }
+    // "send that pdf to kevin on whatsapp": the file this chat just made or listed, straight into the contact's chat (user presses Send)
+    const cs = parseChatSend(task);
+    if (cs) {
+      const rows = cs.ref ? (convo.latestListing()?.rows || []).filter((r) => r.path) : [];
+      if (!cs.ref || rows.length === 1) return done(await handle('fast', 'chat_send', { app: cs.app, to: cs.to, ...(cs.ref ? { path: rows[0].path } : { text: cs.text }) }));
+    }
     // "delete them / those / it" right after a listing: exactly the rows of the latest listing, confirmed, then checked on disk.
     const ref = convo.deleteRef(task);
     if (ref) {
@@ -911,30 +940,46 @@ BUILT-IN TOOLS (same "do"): {"action":"browse_files","params":{"in":"videos|down
       return done(true);
     }
     let t = performance.now();
-    const it = parseIntent(task);
+    // two or more requests in one sentence: if every part is understood, run them all (the whole-sentence parse would keep only the first)
+    let multiFirst = false, multiParts = null;
+    { const ps = splitTask(task); const xs = ps && ps.map((p) => parseIntent(p));
+      const whole = parseIntent(task);
+      const oneStep = whole.confidence >= FAST_MIN && /search on a site|then search|browser profile|several tools/.test(whole.reason || '');
+      if (oneStep) { /* one combined step: keep it whole */ }
+      else if (xs && xs.length > 1 && xs.every((x) => x.action !== 'unknown' && x.confidence >= FAST_MIN) && !parseOverview(task)) { multiFirst = true; }
+      // "remind me in 20 minutes to check the oven and add flour and sugar to my shopping list": try each "and" as the
+      // one place where the sentence splits in two; both halves must be understood (the first such split wins)
+      else if (!parseOverview(task)) for (const m of task.matchAll(/\s+and\s+(?:then\s+|also\s+)?/gi)) {
+        const a = task.slice(0, m.index).trim(), b = task.slice(m.index + m[0].length).trim();
+        const ok = (x) => x.action !== 'unknown' && x.confidence >= FAST_MIN;
+        if (a && b && ok(parseIntent(a)) && ok(parseIntent(b))) { multiFirst = true; multiParts = [a, b]; break; }
+      } }
+    const it = multiFirst ? { action: 'unknown', confidence: 0 } : parseIntent(task);
     mark('parse', t);
     if (it.action !== 'unknown' && it.confidence >= FAST_MIN) return done(await handle('fast', it.action, it.params));
     // 2. cache: an AI decision that worked before (the saved target is re-checked first)
     t = performance.now();
-    const hit = await cacheLookup(window.api.db, window.api.fastValid, task);
+    const hit = multiFirst ? null : await cacheLookup(window.api.db, window.api.fastValid, task);
     mark('cache', t);
     if (hit) {
       if (await handle('cache', hit.action, hit.params)) return done(true);
       await window.api.db('cacheDrop', cacheKey(task));
     }
     // 2b. several simple commands in one line ("open spotify and put volume at 40%"): each runs in order, still zero model calls
-    const parts = splitTask(task);
+    const parts = multiParts || splitTask(task);
     const its = parts && parts.map((p) => parseIntent(p));
     if (its && its.every((x) => x.action !== 'unknown' && x.confidence >= FAST_MIN)) {
       let ok = true, ran = 0;
+      const grid = []; // their cards, shown together
       for (const x of its) {
         print('cmd', describe(x.action, x.params), 'fast');
         const r = await exec(x.action, x.params);
-        if (r.status === 'done') { print('out', r.message, 'fast'); noteTurn({ task: x.normalized || task, route: 'fast', action: x.action, params: x.params, say: r.message, rows: rowsFrom(r.data, r.table?.paths), n: String(r.data || '').split('\n').filter((l) => l && !l.startsWith('…')).length }); ran++; continue; }
+        if (r.status === 'done') { if (r.card && toolCardFor(r.card)) grid.push(r.card); else print('out', r.message, 'fast'); noteTurn({ task: x.normalized || task, route: 'fast', action: x.action, params: x.params, say: r.message, rows: rowsFrom(r.data, r.table?.paths), n: String(r.data || '').split('\n').filter((l) => l && !l.startsWith('…')).length }); ran++; continue; }
         if (r.status === 'refused') { print('dim', 'skipped', ''); continue; }
         if (!ran) return done(false); // nothing happened yet: let the AI take the whole task
         ok = false; print('err', r.reason || r.message || "couldn't do that part", ''); break;
       }
+      if (grid.length) { const g = grid.length > 1 ? { type: 'grid', cards: grid } : grid[0]; const tc = toolCardFor(g, popOut(g)); if (tc) { log.append(tc); toEnd(); } }
       await finish('fast', its[0].action, ok, { parts: its.length });
       return done(true);
     }
@@ -963,6 +1008,12 @@ BUILT-IN TOOLS (same "do"): {"action":"browse_files","params":{"in":"videos|down
       return done(true);
     }
     if (routed.action === 'unknown' || routed.action === 'old') return done(false);
+    // a delete / move / copy the quick router picked must really be the thing the user named, or it does not run:
+    // every word they said must be in its name, and "file" never means a folder (the full AI looks properly instead)
+    if (/^(delete_file|move_file|copy_file)$/.test(routed.action)) {
+      const p = String(routed.params?.path || routed.params?.from || '');
+      if (!nameFits(task, p)) { techPrint('dim', `router picked ${p}: does not match the words, asking the AI`, ''); return done(false); }
+    }
     if (routed.action !== 'script') return done(await handle('router', routed.action, routed.params));
 
     // 4. AI script fallback: small exact context in, one PowerShell block out, safety-checked, always confirmed
@@ -979,11 +1030,11 @@ BUILT-IN TOOLS (same "do"): {"action":"browse_files","params":{"in":"videos|down
       const chk = await window.api.scriptCheck(x.script);
       if (chk.level === 'block') { print('err', `blocked, not running it:\n- ${chk.reasons.join('\n- ')}`, 'safety'); await finish('script', 'script', false, { result: 'blocked', script: x.script }); return done(true); }
       techPrint('cmd', x.script, 'script');
-      if (!(await ask(DEV ? `AI-written script${chk.reasons.length ? ` (${chk.reasons.join('; ')})` : ''}. Run it?` : 'Genisys needs to run a small program on your PC to do this. Go ahead?'))) { print('dim', 'skipped', ''); await finish('script', 'script', false, { result: 'refused', script: x.script }); return done(true); }
       setSt('running');
       t = performance.now();
-      const r = await window.api.scriptRun(x.script, true, task);
+      const r = await window.api.scriptRun(x.script, true, task); // the main process shows the confirm dialog
       mark('exec', t);
+      if (r.status === 'refused') { print('dim', 'skipped', ''); await finish('script', 'script', false, { result: 'refused', script: x.script }); return done(true); }
       if (r.status === 'done') { if (r.out.trim()) techPrint('out', r.out.trim(), 'out'); await finish('script', 'script', true, { script: x.script }); return done(true); }
       if (r.status === 'blocked') { print('err', `blocked: ${r.check.reasons.join('; ')}`, 'safety'); await finish('script', 'script', false, { result: 'blocked', script: x.script }); return done(true); }
       if (st.calls < 2) { techPrint('dim', 'script failed, trying once more…', ''); smsgs = [...smsgs, { role: 'assistant', content: raw }, { role: 'user', content: `The script failed:\n${String(r.out).slice(0, 500)}\nFix it. Same rules.` }]; continue; }
@@ -1013,6 +1064,7 @@ BUILT-IN TOOLS (same "do"): {"action":"browse_files","params":{"in":"videos|down
     if (speedMode === 'new' && !insist && !want && !answer && mode !== 'script' && !webMode) {
       fastInfo = await fastFlow(task);
       if (fastInfo.handled) return;
+      if (stopped) { setRun(false); setSt('stopped'); print('dim', 'Stopped.', ''); return; } // Stop during the router: no AI loop after it
     }
     const t0 = Date.now();
     // Stage 1 timing: stage name -> ms. Written to timing.log (with main-side numbers) when the command ends.
@@ -1043,7 +1095,15 @@ BUILT-IN TOOLS (same "do"): {"action":"browse_files","params":{"in":"videos|down
     }
     for (let i = 1; i < history.length; i++) if (!taskStarts.includes(i) && history[i].role === 'user' && history[i].content.length > 1500) history[i].content = `${history[i].content.slice(0, 1500)}\n…(cut)`;
     taskStarts.push(history.length);
-    history.push({ role: 'user', content: want ? `${task}\n\n[The user asked for ${want.n} agents${want.web ? ' that work on the web' : ''} for this. Split the work into exactly ${want.n} independent jobs with "delegate"${want.web ? ' (set web: true on each)' : ''}, unless it is too small to split: then say you'll do it yourself and do it.]` : att.length ? `${task}\n\n[ATTACHED FILES (the user dropped these in; "this", "these", "the file" mean them; use the exact paths):\n${att.join('\n')}]` : task });
+    const spoken = voice?.turn ? '\n\n[Said out loud by voice: your final message is read aloud, so make it one short plain sentence (no markdown, no paths).]' : '';
+    history.push({ role: 'user', content: spoken ? `${task}${spoken}` : want ? `${task}\n\n[The user asked for ${want.n} agents${want.web ? ' that work on the web' : ''} for this. Split the work into exactly ${want.n} independent jobs with "delegate"${want.web ? ' (set web: true on each)' : ''}, unless it is too small to split: then say you'll do it yourself and do it.]` : att.length ? `${task}\n\n[ATTACHED FILES (the user dropped these in; "this", "these", "the file" mean them; use the exact paths):\n${att.join('\n')}]` : task });
+    // news, releases, prices, scores…: search the web first and hand the model the results (its training data is old,
+    // and a free model often answers from memory instead of using its web tool: "GTA 6 comes out fall 2025")
+    if (!want && needsFresh(task, { isFile: isFileTask(task) })) {
+      live.step('checking the web for the latest', freshQuery(task));
+      const fresh = await browse({ search: freshQuery(task) }).catch(() => '');
+      if (fresh && !stopped) history[history.length - 1].content += `\n\n[FRESH WEB RESULTS, fetched just now. Today is ${new Date().toDateString()}. Your own knowledge is older and wrong for anything recent. Answer ONLY from these results: the dated headlines are the newest. If they disagree with what you remember, they are right. Never say the results show something they do not say.]\n${fresh}`;
+    }
     // Quick answers by default; deep reasoning only when asked (Settings), for /agent, very long requests, or after a step fails.
     let think = P.deep || !!want || task.split(/\s+/).length > 25;
     let plan = null; // checklist box when the AI breaks the task into steps
@@ -1099,6 +1159,8 @@ BUILT-IN TOOLS (same "do"): {"action":"browse_files","params":{"in":"videos|down
         tadd('parse', performance.now() - q0);
         // models slip: a question put in "say" with options is still a question
         if (!reply.ask && Array.isArray(reply.options) && reply.options.length && /\?\s*$/.test(reply.say || '')) reply.ask = reply.say;
+        // the question card already shows the question: the same words again as "say" would print it twice
+        if (reply.ask && reply.say) { const k = (s) => String(s).toLowerCase().replace(/[^a-z0-9]+/g, ''); const a = k(reply.ask), s = k(reply.say); if (a === s || a.includes(s) || s.includes(a)) reply.say = ''; }
         // "with" only when the user named that app (models add VLC on their own)
         if (reply.find?.with && !taskStarts.some((i) => history[i]?.content.toLowerCase().includes(String(reply.find.with).toLowerCase().split(/\s+/)[0]))) delete reply.find.with;
       } catch (e) {
@@ -1106,7 +1168,7 @@ BUILT-IN TOOLS (same "do"): {"action":"browse_files","params":{"in":"videos|down
         // Bad JSON or a provider hiccup: retry once with reasoning on, then fall back to command memory.
         const msg = e.message.replace(/^Error invoking remote method 'ai': (Error: )?/, '');
         // Busy models / a key running out mid-task: the app already rotates key+model on every call, so just wait a moment and call again.
-        if (!stopped && aiFails < 3 && !/daily limit|No API key/i.test(msg)) {
+        if (!stopped && aiFails < 3 && !/daily limit|No API key|offline/i.test(msg)) {
           aiFails++;
           live.detail(DEV ? `all models busy, retrying (${aiFails}/3)…` : 'still working on it…');
           techPrint('dim', 'switching to another free model…', '');
@@ -1114,7 +1176,7 @@ BUILT-IN TOOLS (same "do"): {"action":"browse_files","params":{"in":"videos|down
           await new Promise((r) => setTimeout(r, 1000 * aiFails));
           step--; continue;
         }
-        if (!think && !stopped) { think = true; techPrint('dim', 'trying again, thinking harder…', ''); step--; continue; }
+        if (!think && !stopped && !/offline/i.test(msg)) { think = true; techPrint('dim', 'trying again, thinking harder…', ''); step--; continue; }
         problem(e.message.replace(/^Error invoking remote method 'ai': (Error: )?/, ''), task);
         failed = true;
         if (step === 1 && !stopped) offlineOk = await fromMemory(task);
@@ -1127,7 +1189,9 @@ BUILT-IN TOOLS (same "do"): {"action":"browse_files","params":{"in":"videos|down
         tick(1);
       }
       if (reply.step) tick(Number(reply.step));
-      if (reply.say) {
+      const working = !reply.done && !reply.ask && !!(reply.cmd || reply.web || reply.find || reply.app || reply.file || reply.trash || reply.restore || reply.delegate);
+      if (reply.say && working) { live.note(reply.say); lastSay = reply.say; } // "Let me check the time…": thinking, not an answer
+      else if (reply.say) {
         const n = ran.length + webSteps;
         revealNext = !!reply.done && ANIM.focus !== 'off' && (ANIM.focus === 'always' || (n >= 3 && reply.say.length >= 40) || (webSteps > 0 && reply.say.length >= 60));
         print('ai', reply.say, '›');
@@ -1187,7 +1251,7 @@ BUILT-IN TOOLS (same "do"): {"action":"browse_files","params":{"in":"videos|down
         if (r.status === 'done' && r.table) { live.out(r.message, false); if (r.stats?.length) log.append(statCards(r.stats)); log.append(dataTable(r.table, { open: (f) => window.api.openPath(f) })); toEnd(); results.push(`Done: ${r.message}
 ${r.data}
 (The user already sees this as a table. Do not repeat it: one short line in say, done=true.)`); webSteps++; }
-        else if (r.status === 'done') { live.out(r.message, false); results.push(`Done: ${r.message}`); webSteps++; }
+        else if (r.status === 'done') { live.out(r.message, false); const tc = r.card && toolCardFor(r.card, popOut(r.card)); if (tc) { log.append(tc); toEnd(); } results.push(`Done: ${r.message}${tc ? '\n(The user sees this as a card. One short line in say.)' : ''}`); webSteps++; }
         else if (r.status === 'refused') results.push('The user said no to that. Choose another way or finish.');
         else { results.push(`That built-in control failed: ${r.reason || r.message || 'unknown'}. Try another way.`); stepFailed = true; live.fail(); }
       }
@@ -1200,7 +1264,10 @@ ${r.data}
       if (reply.trash?.length && !stopped) {
         const list = [].concat(reply.trash).map(String);
         live.step('moving to the Recycle Bin', `${list.length} item${list.length === 1 ? '' : 's'}`);
-        if (list.length > 10 && !(await ask(`Move ${list.length} items to the Recycle Bin?`, { code: list.join('\n'), desc: 'You can get them back from the Recycle Bin.' }))) { results.push('User refused to trash these. Finish or choose another way.'); allOk = false; }
+        // never silently: an item whose name is not what the user said (or a folder when they said "file") is shown and asked
+        const odd = list.filter((p) => !nameFits(task, p));
+        if (odd.length && !(await ask(`Delete ${odd.length === 1 ? 'this' : 'these'}? ${odd.length === 1 ? "It doesn't look like what you named." : "They don't look like what you named."}`, { code: odd.join('\n'), desc: 'Check the exact path. Deny if this is not what you meant.', danger: true }))) { results.push(`User said NO: these are NOT what they meant, do not delete them: ${odd.join(' | ')}. Search again for the exact name they said, or ask them.`); allOk = false; stepFailed = true; }
+        else if (list.length > 10 && !(await ask(`Move ${list.length} items to the Recycle Bin?`, { code: list.join('\n'), desc: 'You can get them back from the Recycle Bin.' }))) { results.push('User refused to trash these. Finish or choose another way.'); allOk = false; }
         else {
           const r = await window.api.trash(list);
           const good = r.filter((x) => x.ok), bad = r.filter((x) => !x.ok);
@@ -1243,7 +1310,7 @@ ${r.data}
       if (reply.web && !stopped) live.step('browsing', reply.web.search || reply.web.read);
       if (reply.web && !stopped) { results.push(await tm('web', browse(reply.web))); webSteps++; }
       try {
-        if (reply.file?.path && !stopped) { live.step('writing file', reply.file.path); results.push(await tm('fileWrite', writeFile(reply.file))); }
+        if (reply.file?.path && !stopped) { live.step('writing file', reply.file.path); results.push(await tm('fileWrite', writeFile(reply.file).catch((e) => { live.fail(); allOk = false; return `File NOT written: ${String(e.message).replace(/^Error invoking remote method 'write': (Error: )?/, '')}. Fix it and write it again.`; }))); }
       } catch (e) {
         print('err', "Couldn't save that file.", 'error');
         results.push(`File write failed: ${e.message}`);
@@ -1252,13 +1319,13 @@ ${r.data}
       if (reply.cmd?.trim() && !stopped) {
         const plainStep = String(reply.step || '').trim() || 'Working on your PC';
         live.step('working', DEV ? reply.cmd : plainStep);
-        if (isRisky(reply.cmd) && !(await ask(`${String(reply.step || 'Run this command').trim().replace(/[.?!]+$/, '')}?`, { code: reply.cmd, desc: 'This changes things on your PC.', danger: true }))) {
+        setSt('running');
+        const { code, out } = await tm('cmdRun', window.api.run(reply.cmd)); // risky commands are confirmed by the main process
+        if (code && out === 'cancelled by user') {
           live.out('denied'); live.fail();
           results.push('User refused to run this command. Choose another way or finish.');
           allOk = false;
         } else {
-          setSt('running');
-          const { code, out } = await tm('cmdRun', window.api.run(reply.cmd));
           ran.push(reply.cmd);
           if (DEV) live.out(toolCard({ name: reply.cmd.split('\n')[0].slice(0, 80), input: reply.cmd, output: out.trim(), ok: !code, status: code ? `exit ${code}` : 'Completed' }), false);
           // dir/where/findstr exit 1 just means "nothing matched": not an error, no need for deep thinking.
@@ -1311,7 +1378,7 @@ ${r.data}
     if (ok && !offlineOk && allOk && ran.length && !att.length && !ran.some(serious)) await window.api.db('remember', task, ran, lastSay);
     if (!asked) {
       const gone = changes.filter((c) => c.status === 'D').map((c) => baseName(c.path));
-      if (lastSay || gone.length) noteTurn({ task, route: 'ai', action: gone.length ? 'trashed' : ran.length ? 'ran commands' : 'answered', say: `${lastSay || ''}${gone.length ? ` [checked: moved to the Recycle Bin: ${gone.join(', ')}]` : ''}`.trim() });
+      if (lastSay || gone.length || changes.length) noteTurn({ task, route: 'ai', rows: changes.filter((c) => c.status !== 'D').slice(-10).map((c) => ({ text: `${baseName(c.path)} | ${c.status === 'A' ? 'created' : 'changed'}`, path: c.path })), action: gone.length ? 'trashed' : ran.length ? 'ran commands' : changes.length ? 'wrote files' : 'answered', say: `${lastSay || ''}${gone.length ? ` [checked: moved to the Recycle Bin: ${gone.join(', ')}]` : ''}`.trim() });
       await window.api.db('logTask', title, task, ran.length, secs, ok);
       if (!ok && !stopped && (await window.api.db('failsToday', task)) >= 2) {
         window.api.notify('problem', `"${task.slice(0, 60)}" failed again today. Try rewording it, or check Settings → models.`);
@@ -1329,6 +1396,9 @@ ${r.data}
   // Multi-line box: Enter sends, Shift+Enter or Ctrl+Enter = new line. The send button does the same as Enter.
   const grow = () => { input.style.height = 'auto'; input.style.height = `${Math.min(140, input.scrollHeight)}px`; };
   input.addEventListener('input', grow);
+  // the box's width can change under it (the runner pill animating out to the full bar): a height measured while it was
+  // narrow is far too tall, so measure again whenever the width settles on a new value
+  { let w = 0; new ResizeObserver(([e]) => { const nw = Math.round(e.contentRect.width); if (nw !== w) { w = nw; grow(); } }).observe(input); }
   input.addEventListener('keydown', (e) => {
     if (e.key !== 'Enter' || e.isComposing) return;
     if (e.ctrlKey || e.metaKey) { e.preventDefault(); input.setRangeText('\n', input.selectionStart, input.selectionEnd, 'end'); grow(); }
@@ -1339,7 +1409,7 @@ ${r.data}
     } else if (!e.shiftKey) { e.preventDefault(); $('form').requestSubmit(); }
   });
   if (mode === 'runner') {
-    input.placeholder = 'type a task · Enter sends · ⇧Enter new line · Alt+Enter opens a window · Esc closes';
+    input.placeholder = 'Ask anything · Enter sends · Esc closes';
     $('r-close').onclick = () => window.api.hideRunner();
     input.focus();
   }
@@ -1350,7 +1420,6 @@ ${r.data}
     { cmd: 'agent', title: 'Agent', desc: 'Open AI agent windows. Add a number to open several: /agent 5 task', ic: SL('<rect width="18" height="18" x="3" y="3" rx="4"/><path d="M8 12h8M12 8v8"/>') },
     { cmd: 'browser', title: 'Browser', desc: 'An agent that works on the web: searches, reads and opens sites', ic: SL('<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/>') },
     { cmd: 'search', title: 'Search', desc: 'Find a file, folder or app on this PC: /search invoice pdf', ic: SL('<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>') },
-    { cmd: 'script', title: 'Script writer', desc: 'Write, save and test a script or program', ic: SL('<path d="m18 16 4-4-4-4M6 8l-4 4 4 4M14.5 4l-5 16"/>') },
   ];
   const slashEl = $('slash');
   if (mode === 'runner') slashEl.parentElement.before(slashEl); // the runner card grows around it, next to (not inside) the input bar
@@ -1667,7 +1736,6 @@ ${r.data}
       if (nm && cmd !== 'script') { n = Math.max(1, Math.min(8, +nm[1])); rest = nm[2].trim(); }
       const web = cmd === 'browser';
       const finish = (msg) => { print('dim', msg, ''); if (mode === 'runner') window.api.hideRunner(); };
-      if (cmd === 'script') { window.api.open('script', rest); return finish('opened the script writer'); }
       // "/agent 2 [task one, task two]": one agent per comma-separated task, opened directly (no AI split).
       const br = /^\[([\s\S]*)\]\s*$/.exec(rest);
       if (br) {
@@ -1684,19 +1752,25 @@ ${r.data}
       if (n === 1 || !canDelegate) { window.api.open('agent', rest, { web }); return finish(`opened ${web ? 'a browser agent' : 'an agent'} for this task`); }
       // N agents + a task: this window's AI splits the work, opens the windows and manages them.
       if (mode === 'runner' && !document.body.classList.contains('open')) { document.body.classList.add('open'); window.api.runnerOpen(); }
+      document.body.classList.add('chatting'); leaveWelcome(); // dots and the welcome orb go once the chat has a message
       print('user', task, '$');
       loop(rest, { n, web });
       return;
     }
-    if (mode === 'runner' && !document.body.classList.contains('open')) { document.body.classList.add('open'); window.api.runnerOpen(); }
+    if (mode === 'runner' && !document.body.classList.contains('open')) { clearTimeout(runnerOpenTimer); runnerOpenTimer = setTimeout(openRunnerPanel, 400); }
     const att = files.splice(0); drawAtts();
+    voice?.noteTyped();
+    document.body.classList.add('chatting'); leaveWelcome();
     const row = print('user', task, '$');
     if (att.length) { const a = document.createElement('div'); a.className = 'atts'; a.append(...att.map((p) => attChip(p))); row.lastChild.append(a); }
     loop(task, null, att);
   };
-  $('stop').onclick = () => { if (running) { stopped = true; setSt('stopping…'); live.step('stopping', 'finishing the current step'); abort?.(); } };
+  // Stop: cancel this window's model requests in main (no model keeps working in the background), end the wait at once
+  $('stop').onclick = () => { voice?.cancelAll(); if (running) { stopped = true; window.api.aiCancel?.(); setSt('stopping…'); live.step('stopping', 'stopped'); abort?.(); } };
   $('send').addEventListener('click', (e) => { if (running) { e.preventDefault(); $('stop').click(); } });
   input.focus();
+  voice = initVoice({ input, form: $('form'), foot: $('form').closest('.foot'), pill: $('vpill'), micBtn: $('mic'), mode });
+  if (mode === 'runner') window.api.onRunnerShow?.(() => { input.focus(); voice.start(); }); // Alt+Space shows the (preloaded) bar as a small listening pill
   // Opened with a task (from /agent or /script): start right away.
   if (q.get('task')) { input.value = q.get('task'); $('form').requestSubmit(); }
 }

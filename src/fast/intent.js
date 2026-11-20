@@ -1,9 +1,13 @@
 // Stage 2: understand simple commands without any model. Returns { action, params, confidence (0-1), normalized, reason }.
 // Only a few safe "open / search / play" shapes are understood. Everything else gets a low confidence and goes on to the AI.
 import { normalize, typoDistance } from './normalize.js';
+import { parseTimeIn, parseReminder, parsePlay } from './assist.js';
+import { parseClock, parseNote, parseQuick, calc, parseMedia, parseOverview, fixTypos } from './siri.js';
 import { parseSystem } from './system.js';
+import { categoryOf, parseFavoriteCommand } from './favorites.js';
 import { parseFileQuery, unexplainedWords } from './fileQuery.js';
 import { parseSysQuery } from './tables.js';
+import { spellVariants } from './spell.js';
 
 export const FAST_MIN = 0.75; // at or above this the fast path may run it
 
@@ -19,7 +23,7 @@ export const FOLDERS = {
 };
 export const BROWSERS = { chrome: 'chrome', 'google chrome': 'chrome', edge: 'edge', 'microsoft edge': 'edge', firefox: 'firefox', brave: 'brave', opera: 'opera' };
 export const SITES = {
-  youtube: 'https://www.youtube.com', gmail: 'https://mail.google.com', github: 'https://github.com', google: 'https://www.google.com',
+  youtube: 'https://www.youtube.com', gmail: 'https://mail.google.com/mail/u/0/#inbox', github: 'https://github.com', google: 'https://www.google.com',
   facebook: 'https://www.facebook.com', instagram: 'https://www.instagram.com', twitter: 'https://x.com', x: 'https://x.com',
   linkedin: 'https://www.linkedin.com', reddit: 'https://www.reddit.com', netflix: 'https://www.netflix.com', chatgpt: 'https://chatgpt.com',
   wikipedia: 'https://www.wikipedia.org', maps: 'https://www.google.com/maps', 'google maps': 'https://www.google.com/maps',
@@ -74,10 +78,66 @@ function pickVerb(words) {
 
 const cleanQuery = (s) => s.replace(/^(?:for|up|about)\s+/, '').trim();
 
+// Typos: the request is read as typed AND as spell-fixed (spell.js); the fixed reading is used only when it is understood
+// better: a higher confidence, or a real tool where the typed one fell to a catch-all ("show me all alram" -> open_app "all alram").
+// apps, sites, folders and browsers Genisys knows by name are fix targets too ("open spotfy", "how much ram is geniays using")
+const NAMES = new Set([...KNOWN_APPS, ...Object.keys(SITES), ...Object.keys(FOLDERS), ...Object.keys(BROWSERS), 'genisys', 'potplayer', 'vlc']
+  .flatMap((n) => n.split(' ')).filter((n) => /^[a-z]{4,}$/.test(n)));
+// Several fixed readings ("what timed is it" -> timer / time): the one understood best wins, the first on a tie.
+const CATCH_ALL = new Set(['unknown', 'open_app', 'search_web', 'find_file', 'open_file', 'browse_files', 'play_media']);
 export function parseIntent(text) {
-  const raw = String(text ?? '').trim();
+  const typed = String(text ?? '').trim();
+  const a = parseCore(typed);
+  const reads = spellVariants(typed, NAMES);
+  if (reads.length === 1 && reads[0] === typed) return a;
+  let b = null;
+  for (const r of reads) { const x = parseCore(r); if (!b || x.confidence > b.confidence || (CATCH_ALL.has(b.action) && !CATCH_ALL.has(x.action))) b = x; }
+  // the fixer only ever turns non-words into command words (tools/typo-bench.mjs: clean requests never change), so a
+  // fixed reading that is understood well is trusted over the typed one ("sjow my list and reminders" is not "reminders")
+  const better = b.confidence > a.confidence || (b.confidence >= FAST_MIN && b.confidence >= a.confidence - 0.1);
+  return better ? { ...b, fixedFrom: typed } : a;
+}
+
+export function parseCore(text) {
+  const raw = fixTypos(String(text ?? '').trim());
   const n = normalize(raw);
   if (!n) return unknown(n, 0, 'empty');
+  // "my favorite browser is chrome", "make kevin my default chrome profile", "forget my favorite email": settings, no AI.
+  const favCmd = parseFavoriteCommand(raw);
+  if (favCmd) return out('favorite', favCmd, 0.95, n, 'favorite setting');
+  // "no, the other one" / "wrong one" / "no, I meant spotify": a correction of the last thing opened (the action ignores it when nothing was opened lately)
+  { const cm = /^\s*(?:(?:no|nope|nah|wrong|not that|not this|that'?s wrong)(?:\s+one)?[,.!\s]*(?:(?:the\s+)?other\s+one|another\s+one|something\s+else)?|(?:the\s+)?other\s+one|another\s+one)\s*[.!]?\s*$/i.exec(raw);
+    if (cm) return out('wrong_pick', {}, 0.9, n, 'correction');
+    const cm2 = /^\s*(?:no|nope|nah|not that|wrong)[,.!\s]+(?:i\s+(?:meant|mean|wanted|want)\s+|open\s+)(.+?)\s*$/i.exec(raw);
+    if (cm2) return out('wrong_pick', { text: cm2[1] }, 0.9, n, 'correction'); }
+  // "catalog", "catalog spotify", "rescan catalog": what Genisys knows about this PC
+  { const lm = /^\s*(?:(stop|disable)\s+(?:labell?ing|classifying)(?:\s+(?:my\s+)?(?:pc|apps|computer))?|(?:label|classify)\s+(?:all\s+)?(?:my\s+)?(?:pc|apps|computer|catalog))\s*$/i.exec(raw);
+    if (lm) return out('catalog', { op: lm[1] ? 'label_off' : 'label' }, 0.95, n, 'labeling');
+    if (/^\s*(?:show\s+)?(?:my\s+|the\s+)?(?:confusions|mistakes|misses)\s*$|^\s*what\s+(?:did|have)\s+you\s+(?:get|got)\s+wrong\??\s*$/i.test(raw)) return out('catalog', { op: 'confusions' }, 0.95, n, 'confusion log');
+    const pm = /^\s*(?:predict|why\s+open)\s+(.+)$/i.exec(raw); if (pm) return out('catalog', { op: 'predict', query: pm[1].trim() }, 0.95, n, 'predict');
+    const m = /^\s*(?:(rescan|refresh)\s+(?:the\s+)?catalog|(?:show\s+)?(?:the\s+)?catalog(?:\s+(?:for\s+)?(.+))?)\s*$/i.exec(raw);
+    if (m) return out('catalog', m[1] ? { op: 'rescan' } : m[2] ? { op: 'search', query: m[2].trim() } : { op: 'summary' }, 0.95, n, 'catalog'); }
+  // Everyday assistant asks (assist.js): exact answers from code, never a model's guess.
+  if (/^(?:good\s+morning|morning|hey\s+good\s+morning)(?:\s+genisys)?\s*[!.]*$|^(?:what(?:'s| is| does))\s+(?:my|today'?s?)\s+(?:day|schedule|agenda|plan)(?:\s+(?:look\s+like|today))?\??$|^(?:brief\s+me|my\s+(?:day|briefing|morning\s+briefing)|morning\s+briefing|daily\s+briefing)\s*$/i.test(raw.trim())) return out('briefing', {}, 0.95, n, 'briefing');
+  // "show me calendar", "open my calendar", "what's on my calendar", "calendar": the calendar inside Genisys (no PC app needed)
+  if (/^(?:(?:show|open|see|view|check|display)(?:\s+me)?\s+)?(?:my\s+|the\s+)?calendar(?:\s+(?:please|pls|app))?\s*[.!?]?$|^what(?:'s|\s+is)\s+(?:on\s+)?(?:my\s+)?calendar\b/i.test(raw.trim()))
+    return out('calendar', {}, 0.95, n, 'in-app calendar');
+  // "open youtube and search for lofi music": search ON that site, in one step
+  { const ys = /^(?:open|go\s+to)\s+(youtube|google|wikipedia|amazon|github|bing)\s+(?:and\s+)?search(?:\s+for)?\s+(.+?)\s*$/i.exec(raw.trim());
+    if (ys) return out('search_web', { query: ys[2], site: ys[1].toLowerCase() }, 0.95, n, 'search on a site'); }
+  // "how much ram is chrome using": real numbers from the running processes
+  { const ru = /^(?:how\s+much|what(?:'s|\s+is))\s+(?:ram|memory|cpu|resources?)\s+(?:is|does|are)\s+(.+?)\s+(?:using|use|taking|take|eating)(?:\s+(?:right\s+)?now)?\s*\??$/i.exec(raw.trim())
+      || /^(?:how\s+much\s+)?(?:ram|memory)\s+(?:used\s+by|of)\s+(.+?)\s*\??$/i.exec(raw.trim());
+    if (ru) return out('app_usage', { name: ru[1].replace(/^(?:the|my)\s+/i, '').trim() }, 0.93, n, 'app ram / cpu'); }
+  { const ov = parseOverview(raw); if (ov) return out('overview', ov, 0.95, n, 'several tools at once'); }
+  { const md = parseMedia(raw); if (md) return out('media', md, 0.95, n, 'control the open player'); }
+  { const ck = parseClock(raw); if (ck) return out(ck.action, ck.params, 0.95, n, `siri: ${ck.action}`); // timers, alarms, stopwatch (siri.js)
+    const nt = parseNote(raw); if (nt) return out('note', nt, 0.95, n, 'siri: note');
+    const qk = parseQuick(raw); if (qk) return out('quick', qk, 0.95, n, 'siri: quick');
+    if (/^(?:turn|switch|put)\s+(?:on|off)\s+(?:the\s+)?(?:do not disturb|dnd|focus(?:\s+(?:mode|assist))?)\b|^(?:do not disturb|dnd)(?:\s+(?:on|off))?$/i.test(raw.trim())) return out('pc', { do: 'open_settings', name: 'notifications' }, 0.9, n, 'do not disturb lives in Settings');
+    const tz = parseTimeIn(raw); if (tz) return out('world_time', tz, 0.95, n, 'time in a place');
+    const rm = parseReminder(raw); if (rm) return out('remind', rm, 0.95, n, 'reminder');
+    const pl = parsePlay(raw); if (pl) return out('play_music', pl.app ? pl : { query: pl.query }, 0.9, n, 'play music'); }
   // "show all movies in videos newest first": a file table, however long the sentence
   const sq = parseSysQuery(raw); // running / installed apps, drives, startup apps, Wi-Fi networks
   if (sq) return out(sq.action, sq.params, 0.9, n, 'pc table');
@@ -97,9 +157,17 @@ export function parseIntent(text) {
   if (words.length === 1 && URL_RE.test(words[0])) return out('open_url', { url: toUrl(rawToken(raw, words[0])) }, 0.92, n, 'bare url');
   // Weather and quick math: a Google search answers these on the spot, no AI needed.
   const plain = normalize(raw, { keepAll: true });
-  if (/^(?:whats\s+|what\s+is\s+|hows\s+|how\s+is\s+)?(?:weather|forecast)\b(?!\s+app)/.test(n)) return out('search_web', { query: plain.replace(/^(?:whats|what is|hows|how is)\s+(?:the\s+)?/, '') }, 0.9, n, 'weather');
+  if (/^(?:whats\s+|what\s+is\s+|hows\s+|how\s+is\s+)?(?:the\s+)?(?:weather|forecast)\b(?!\s+app)|^(?:will|is)\s+it\s+(?:going\s+to\s+)?(?:rain|be\s+(?:hot|cold|sunny))\b|^(?:do|should)\s+i\s+(?:need|take)\s+an?\s+umbrella\b/.test(n)) {
+    // the place ends where the question goes on: "in kigali, should i take an umbrella?" -> kigali
+    const low = raw.toLowerCase();
+    const w = /\b(?:in|for|at)\s+([a-z][a-z .'-]{1,40}?)(?=\s*(?:[,?.!]|$)|\s+(?:today|tomorrow|now|tonight|this\s+week|and|should|will|do|is|please|or)\b)/.exec(low);
+    const rainQ = /\b(umbrella|raincoat|rain|wet)\b/.test(low);
+    return out('weather', { ...(w ? { place: w[1].trim() } : {}), when: /\btomorrow\b/.test(n) ? 'tomorrow' : 'today', ...(rainQ ? { ask: 'rain' } : {}) }, 0.92, n, 'weather');
+  }
   const math = plain.match(/^(?:calculate|compute|convert)\s+(.*\d.*)$/) || plain.match(/^(?:what\s+is|whats|how\s+much\s+is)\s+(\d.*(?:[+\-*/%^×÷]|\b(?:of|to|in|into|percent|plus|minus|times|divided|squared|miles|km|kg|lbs|pounds|cm|inches|feet|meters|celsius|fahrenheit|dollars|usd|eur|rwf)\b).*)$/);
-  if (math) return out('search_web', { query: math[1] }, 0.88, n, 'quick math');
+  if (math) { const v = calc(raw); return v != null ? out('quick', { op: 'calc', what: raw.trim().replace(/[?]+$/, '') }, 0.95, n, 'calculator') : out('search_web', { query: math[1] }, 0.88, n, 'quick math (units / currency: the web)'); }
+  // "12*7", "square root of 81", "2 to the power of 10": calc() refuses any sentence with other words, so this is safe
+  if (/\d/.test(raw) && calc(raw) != null) return out('quick', { op: 'calc', what: raw.trim().replace(/[?]+$/, '') }, 0.95, n, 'calculator');
 
   const v = pickVerb(words);
   if (!v) return unknown(n, 0.2, 'no known verb');
@@ -110,6 +178,16 @@ export function parseIntent(text) {
   const rv = pickVerb(normalize(raw, { keepAll: true }).split(' '));
   const restRaw = rv ? rv.rest.join(' ').trim() : rest;
 
+  // "open kevin chrome profile and search gmail"
+  const po = v.verb === 'open' && !/\b(?:in|on|with|using|via|from|under)\s+\S+\s+(?:(?:google |microsoft )?(?:chrome|edge|brave)\s+)?profile$/.test(rest) && rest.match(OPEN_PROFILE_RE);
+  if (po && !/^(my|the|a|new)$/.test(po[1].trim())) {
+    const b = po[2] ? BROWSERS[po[2]] : 'chrome', prof = po[1].trim().replace(/^(?:my|the)\s+/, '');
+    const x = (po[3] || '').trim().replace(/\s+(?:app|website|site|page)$/, '');
+    if (!x) return out('open_app', { name: b, profile: prof }, 0.9 - typoPenalty, n, 'browser profile');
+    const url = SITES[x] || SITES[siteNear(x)] || (URL_RE.test(x) ? toUrl(x) : null);
+    if (url) return out('open_url', { url, browser: b, profile: prof }, 0.9 - typoPenalty, n, 'site in a browser profile');
+    return out('search_web', { query: cleanQuery(x), browser: b, profile: prof }, 0.88 - typoPenalty, n, 'search in a browser profile');
+  }
   // "... in kevin chrome profile": which browser profile to open it in
   let browser = null;
   let profile = null;
@@ -154,6 +232,7 @@ export function parseIntent(text) {
   }
 
   // v.verb === 'open'
+  const full = rest.replace(/\s+(?:app|application|program)$/, ''); // "github desktop" may be an installed app of that exact name
   const target = rest.replace(/\s+(?:(?:desk\w*|dekst\w*|windows|pc)\s+)?(?:app|application|program)$/, '').replace(/\s+desk\w*$/, ''); // "chatgpt deskrop app" (typo) = chatgpt
   if (URL_RE.test(target)) return out('open_url', withProfile(withBrowser({ url: toUrl(rawToken(raw, target)) }, browser), profile), 0.93 - typoPenalty, n, 'url');
   // "open c:", "open d:\projects", "open c drive": a path on this PC
@@ -161,12 +240,14 @@ export function parseIntent(text) {
   if (pm) return out('open_path', { path: pm[0].includes('\\') ? rawToken(raw, target) : `${pm[1].toUpperCase()}:\\` }, 0.9 - typoPenalty, n, 'path');
   // A name that is both an app and a site ("whatsapp", "netflix"): the installed desktop app first, the website only if it
   // isn't installed. "whatsapp web" or "... in chrome" still means the website.
-  if (!SITES[target] && target.length >= 5 && /^[a-z0-9]+$/.test(target)) { // "gmain" -> gmail: one typo in a known site name
-    const near = Object.keys(SITES).find((k) => k.length >= 5 && Math.abs(k.length - target.length) <= 1 && editDistance(k, target) === 1);
-    if (near) return out('open_url', withProfile(withBrowser({ url: SITES[near] }, browser), profile), 0.85 - typoPenalty, n, `known site (typo: ${near})`);
+  if (categoryOf(target) && !SITES[target] && !browser && !profile) return out('open_app', { name: target }, 0.9 - typoPenalty, n, 'a kind of app: your favorite one'); // "open my email"
+  if (!SITES[target] && siteNear(target)) { // "netflx": the installed app of the corrected name if there is one, else the site
+    const near = siteNear(target);
+    if (!browser && !profile) return out('open_app', { name: near, url: SITES[near] }, 0.9 - typoPenalty, n, `installed app or site (typo: ${near})`);
+    return out('open_url', withProfile(withBrowser({ url: SITES[near] }, browser), profile), 0.85 - typoPenalty, n, `known site (typo: ${near})`);
   }
-  const both = APP_ALIASES[target] || target;
-  if (SITES[target] && KNOWN_APPS.has(both) && !browser) return out('open_app', { name: both, url: SITES[target] }, 0.95 - typoPenalty, n, 'app, else its website');
+  // A known website name: the installed app of that exact name if the catalog has one, else the website (open_app decides).
+  if (SITES[target] && !browser && !profile) return out('open_app', { name: /\sdesktop$/.test(full) && !SITES[full] ? full : target, url: SITES[target] }, 0.95 - typoPenalty, n, 'installed app of that name, else its website');
   if (SITES[target]) return out('open_url', withProfile(withBrowser({ url: SITES[target] }, browser), profile), 0.95 - typoPenalty, n, 'known site');
   const folderWord = target.replace(/\s*(?:folder|directory|dir)$/, '').trim();
   if (FOLDERS[folderWord]) return out('open_folder', { folder: FOLDERS[folderWord] }, 0.95 - typoPenalty, n, 'known folder');
@@ -183,17 +264,23 @@ export function parseIntent(text) {
     if (ext) params.ext = ext[1].toLowerCase();
     return q ? out('open_file', params, 0.85 - typoPenalty, n, 'open a file') : unknown(n, 0.2, 'no file name');
   }
-  const app = APP_ALIASES[target] || target;
-  if (browser && !KNOWN_APPS.has(app)) return unknown(n, 0.3, 'unclear target');
-  if (KNOWN_APPS.has(app)) return out('open_app', { name: app }, 0.96 - typoPenalty, n, 'known app');
-  if (app.split(' ').some((w) => KNOWN_APPS.has(w))) return unknown(n, 0.4, 'an app name plus more: the AI decides');
-  if (target.split(' ').length <= 3 && !/\b(about|with|that|which|where|how|what|why|who|from|for|into|files?|folders?)\b/.test(target)) {
-    return out('open_app', { name: target }, 0.8 - typoPenalty, n, 'maybe an app');
+  // Any short name: the catalog (everything installed on THIS PC) decides what it is, not a list in the code.
+  if (browser) return unknown(n, 0.3, 'unclear target');
+  const tw3 = target.split(' ');
+  if (tw3.length <= 3 && !/\b(about|with|that|which|where|how|what|why|who|from|for|into|and|then|files?|folders?)\b/.test(target)
+    && !(tw3.length > 1 && (/\b(in|on|at|incognito|private|settings|options|preferences)\b/.test(target) || /\b\d+\b/.test(target)))) { // "open chrome in incognito", "open 3 chrome windows": more than a name
+    return out('open_app', { name: target }, (tw3.length <= 2 ? 0.9 : 0.8) - typoPenalty, n, 'an app: the catalog decides');
   }
   return unknown(n, 0.4, 'unclear target');
 }
 
-function editDistance(a, b) { const m = [...Array(a.length + 1)].map((_, i) => [i, ...Array(b.length).fill(0)]); for (let j = 1; j <= b.length; j++) m[0][j] = j; for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++) m[i][j] = Math.min(m[i - 1][j] + 1, m[i][j - 1] + 1, m[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)); return m[a.length][b.length]; }
+function siteNear(t) { // "gmain" -> gmail: one typo in a known site name
+  if (!t || t.length < 5 || !/^[a-z0-9]+$/.test(t)) return null;
+  return Object.keys(SITES).find((k) => k.length >= 5 && Math.abs(k.length - t.length) <= 1 && editDistance(k, t) === 1) || null;
+}
+// "open kevin chrome profile [and search/open X]": the browser in that profile, or X in it ("search gmail" means the Gmail site).
+const OPEN_PROFILE_RE = /^(?:(?:my|the)\s+)?([a-z0-9@._ -]{1,40}?)(?:\s+s)?\s+(?:(google chrome|microsoft edge|chrome|edge|brave)\s+)?profile(?:\s+(?:and|then)\s+(?:search(?:\s+for)?|open|go to|visit|launch|show)\s+(.+))?$/;
+function editDistance(a, b) { const m = [...Array(a.length + 1)].map((_, i) => [i, ...Array(b.length).fill(0)]); for (let j = 1; j <= b.length; j++) m[0][j] = j; for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++) m[i][j] = Math.min(m[i - 1][j] + 1, m[i][j - 1] + 1, m[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1), i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1] ? m[i - 2][j - 2] + 1 : Infinity); return m[a.length][b.length]; }
 function withProfile(p, profile) { if (profile) p.profile = profile; return p; }
 function withBrowser(p, browser) { if (browser) p.browser = browser; return p; }
 // "... in kevin chrome profile", "... with my work profile", "... in kevins chrome": a named browser profile (its own sign-ins).

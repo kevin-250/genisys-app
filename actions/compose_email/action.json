@@ -1,0 +1,36 @@
+{
+  "name": "compose_email",
+  "description": "Open a Gmail draft (to, subject, body filled in) in the user's browser profile. It NEVER sends: the user presses Send. Needs a real recipient address; never invent one.",
+  "triggers": [
+    "email",
+    "mail",
+    "write",
+    "compose"
+  ],
+  "params": {
+    "to": {
+      "type": "string",
+      "required": true
+    },
+    "subject": {
+      "type": "string",
+      "required": false
+    },
+    "body": {
+      "type": "string",
+      "required": false
+    },
+    "browser": {
+      "type": "string",
+      "required": false
+    },
+    "profile": {
+      "type": "string",
+      "required": false
+    }
+  },
+  "destructive": false,
+  "needs_ai": true,
+  "paths": [],
+  "native": "compose_email"
+}

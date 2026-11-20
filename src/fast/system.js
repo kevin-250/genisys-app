@@ -184,7 +184,9 @@ export function makeSystem(d) {
     dark_mode: () => theme(false), light_mode: () => theme(true),
     close_app: async (p) => {
       const name = String(p.name || '').replace(/'/g, "''");
-      const out = await ps(`$n = '${name}'; $ps = Get-Process | ? { $_.MainWindowHandle -ne 0 -and @(${KEEP}) -notcontains $_.ProcessName -and ($_.ProcessName -like "*$n*" -or $_.MainWindowTitle -like "*$n*" -or $_.Description -like "*$n*") }; if (-not $ps) { 'none' } else { foreach ($x in $ps) { ${p.value === 1 ? 'Stop-Process -Id $x.Id -Force' : '[void]$x.CloseMainWindow()'} }; @($ps).Count }`);
+      const run = () => ps(`$n = '${name}'; $ps = Get-Process | ? { $_.MainWindowHandle -ne 0 -and @(${KEEP}) -notcontains $_.ProcessName -and ($_.ProcessName -like "*$n*" -or $_.MainWindowTitle -like "*$n*" -or $_.Description -like "*$n*") }; if (-not $ps) { 'none' } else { foreach ($x in $ps) { ${p.value === 1 ? 'Stop-Process -Id $x.Id -Force' : '[void]$x.CloseMainWindow()'} }; @($ps).Count }`);
+      let out = await run();
+      if (out === 'none') { await new Promise((r) => setTimeout(r, 1500)); out = await run(); } // an app opened a moment ago may not have its window yet
       if (out === 'none') throw new Error(`no open app called "${p.name}"`);
       return `${p.value === 1 ? 'Force-closed' : 'Closed'} ${p.name}`;
     },

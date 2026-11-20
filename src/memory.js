@@ -16,6 +16,19 @@ export function score(a, b) {
 
 export const MATCH = 0.6;
 
+// Apps named in a task, by whole words ("send it on whatsapp" -> WhatsApp). names = catalog app names. At most 2.
+const flat = (s) => String(s).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+export function appsIn(task, names) {
+  const t = ` ${flat(task)} `, t2 = t.replace(/ /g, '');
+  const seen = new Set(), out = [];
+  for (const n of names) {
+    const f = flat(String(n).replace(/\s*\(.*\)$/, '')); // "Teams (work or school)" -> "teams"
+    if (f.length < 3 || seen.has(f) || /^(file|files|folder|open|app|apps|search|settings|windows|microsoft)$/.test(f)) continue;
+    if (t.includes(` ${f} `) || (f.includes(' ') && t2.includes(f.replace(/ /g, '')))) { seen.add(f); out.push(f); if (out.length === 2) break; }
+  }
+  return out;
+}
+
 // Saved .bat file name for a memory row: <task-slug>-<id>.bat
 export const batName = (m) => `${m.task.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'task'}-${m.id}.bat`;
 

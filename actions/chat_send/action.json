@@ -1,0 +1,38 @@
+{
+  "name": "chat_send",
+  "description": "Open the chat with a contact in a desktop chat app (WhatsApp, Telegram, Signal, Discord, Slack) and attach a file or type a message. It NEVER sends: the user presses Send.",
+  "triggers": [
+    "send",
+    "share",
+    "whatsapp",
+    "telegram",
+    "signal",
+    "discord",
+    "slack",
+    "chat",
+    "message"
+  ],
+  "params": {
+    "app": {
+      "type": "string",
+      "required": true
+    },
+    "to": {
+      "type": "string",
+      "required": true
+    },
+    "path": {
+      "type": "path",
+      "required": false
+    },
+    "text": {
+      "type": "string",
+      "required": false
+    }
+  },
+  "destructive": false,
+  "needs_ai": false,
+  "paths": [],
+  "restrictPaths": true,
+  "native": "chat_send"
+}

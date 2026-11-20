@@ -1,0 +1,41 @@
+{
+  "name": "note",
+  "description": "The user's notes and lists (kept in Genisys): op add (text; with list = shopping / to-do / … adds each item), show, done/undo/delete (id), remove (text, list), clear (list).",
+  "triggers": [
+    "note",
+    "notes",
+    "jot",
+    "write down"
+  ],
+  "params": {
+    "op": {
+      "type": "enum",
+      "required": true,
+      "values": [
+        "add",
+        "show",
+        "done",
+        "undo",
+        "delete",
+        "remove",
+        "clear"
+      ]
+    },
+    "text": {
+      "type": "string",
+      "required": false
+    },
+    "id": {
+      "type": "int",
+      "required": false
+    },
+    "list": {
+      "type": "string",
+      "required": false
+    }
+  },
+  "destructive": false,
+  "needs_ai": false,
+  "paths": [],
+  "native": "note"
+}

@@ -1,4 +1,5 @@
 // Main-window tabs: Memory · About you · Notes · Settings. Everything is read from / written to the app DB.
+import { VOICE_DEFAULTS } from './voice/ui.js';
 import { batName } from './memory.js';
 import { PRESETS, getAccent, setAccent } from './accent.js';
 import { ANIM, setAnim } from './anim.js';
@@ -154,6 +155,21 @@ async function settingsTab(root) {
       <p class="desc">Applies to every window right away.</p>
       <div class="swatches"></div>
     </section>
+    <section class="sg"><h3>Voice</h3>
+      <p class="desc">Press Alt+Space (or the mic button), speak, then press Enter: it is sent like typed text. Start typing instead and the mic turns off. Speech is turned into text on this PC by default (or by Groq if you pick online), and audio is never saved.</p>
+      <div class="srow"><div><b>Voice input</b><span>Alt+Space opens as a small listening pill.</span></div><label class="tg"><input type="checkbox" name="v_on"><i></i></label></div>
+      <div class="srow"><div><b>Speech to text</b><span>On this PC: works offline and nothing leaves your computer (English). Online: a bit faster, needs internet and your Groq key.</span></div>
+        <select name="v_stt"><option value="offline">On this PC (offline)</option><option value="online">Online (Groq)</option></select></div>
+      <div class="srow"><div><b>Language</b><span>What you speak. Kinyarwanda: use Auto (best effort).</span></div>
+        <select name="v_lang"><option value="auto">Auto</option><option value="en">English</option><option value="fr">French</option></select></div>
+      <div class="srow"><div><b>Read answers aloud</b><span>Uses the Windows voices on this PC (offline).</span></div>
+        <select name="v_speak"><option value="voice">When I spoke</option><option value="always">Always</option><option value="never">Never</option></select></div>
+      <div class="srow"><div><b>Voice</b><span>Kristin and Joe are built in, work offline and sound natural.</span></div><select name="v_voice"><option value="">Automatic</option></select></div>
+      <div class="slider"><div class="sl-h"><b>Speaking speed</b><span class="sl-v" id="v-rate-v"></span></div>
+        <input type="range" name="v_rate" min="0.7" max="1.5" step="0.05"></div>
+      <div class="srow"><div><b>Microphone</b><span>Which mic to listen to.</span></div><select name="v_mic"><option value="">Windows default</option></select></div>
+      <div class="srow"><div><b>Test the voice</b><span>Plays one sentence with these settings.</span></div><button type="button" class="btn" id="v-test">Play</button></div>
+    </section>
     <section class="sg"><h3>Speed</h3>
       <p class="desc">Fast mode understands simple commands (open, search, play) in code and runs them in under a second with no AI. It remembers what worked, asks one short AI question only when needed, and falls back to the original flow if it is unsure. Off = the original flow. Start a command with ! to force the full AI.</p>
       <div class="srow"><div><b>Fast mode</b><span>Applies to the next command in every window.</span></div><label class="tg"><input type="checkbox" name="speed"><i></i></label></div>
@@ -211,6 +227,38 @@ async function settingsTab(root) {
   f.shareChats.checked = (await window.api.db('getSetting', 'shareChats', false)) === true;
   f.autoUpdate.checked = (await window.api.db('getSetting', 'autoUpdate', true)) !== false;
   f.speed.checked = (await window.api.db('getSetting', 'speedMode', 'new')) === 'new';
+  const V = { ...VOICE_DEFAULTS, ...(await window.api.db('getSetting', 'voice', {})) };
+  f.v_on.checked = V.on; f.v_lang.value = V.lang; f.v_stt.value = V.stt || 'offline'; f.v_speak.value = V.speak; f.v_rate.value = V.rate;
+  const paintRate = () => { f.querySelector('#v-rate-v').textContent = `${Number(f.v_rate.value).toFixed(2)}×`; };
+  f.v_rate.oninput = paintRate; paintRate();
+  // natural offline voices first (shipped with the app), the Windows voices after them
+  const offline = await window.api.ttsVoices?.().catch(() => []) ?? [];
+  const fillVoices = () => {
+    const group = (label, opts) => { const g = document.createElement('optgroup'); g.label = label; g.append(...opts); return g; };
+    const win = speechSynthesis.getVoices();
+    f.v_voice.replaceChildren(
+      ...(offline.length ? [group('Natural (offline, built in)', offline.map((v, i) => new Option(`${v.label}${i === 0 ? ' · default' : ''}`, v.id)))] : [new Option('Automatic', '')]),
+      ...(win.length ? [group('Windows voices', win.map((v) => new Option(`${v.name} (${v.lang})`, v.name)))] : []));
+    f.v_voice.value = V.voice || offline[0]?.id || '';
+  };
+  fillVoices(); speechSynthesis.onvoiceschanged = fillVoices;
+  navigator.mediaDevices?.enumerateDevices().then((ds) => {
+    const mics = ds.filter((d) => d.kind === 'audioinput' && d.deviceId && d.deviceId !== 'default');
+    f.v_mic.append(...mics.map((d, i) => new Option(d.label || `Microphone ${i + 1}`, d.deviceId)));
+    f.v_mic.value = mics.some((d) => d.deviceId === V.mic) ? V.mic : '';
+  }).catch(() => {});
+  let testAudio = null;
+  f.querySelector('#v-test').onclick = async () => {
+    const line = 'Timer set for 5 minutes. It rings at 13:20.';
+    speechSynthesis.cancel(); testAudio?.pause();
+    if (offline.some((v) => v.id === f.v_voice.value)) {
+      const r = await window.api.tts(line, { voice: f.v_voice.value, speed: Number(f.v_rate.value) || 1 });
+      if (r?.wav) { testAudio = new Audio(URL.createObjectURL(new Blob([r.wav], { type: 'audio/wav' }))); testAudio.play().catch(() => {}); return; }
+    }
+    const u = new SpeechSynthesisUtterance(line);
+    const v = speechSynthesis.getVoices().find((x) => x.name === f.v_voice.value); if (v) u.voice = v;
+    u.rate = Number(f.v_rate.value) || 1; speechSynthesis.speak(u);
+  };
   const paintSpeed = async () => {
     const n = await window.api.db('cacheCount');
     const ix = await window.api.indexInfo();
@@ -243,6 +291,7 @@ async function settingsTab(root) {
       deep: f.deep.checked, maxSteps: Math.max(3, Math.min(50, Number(f.maxSteps.value) || 20)),
     });
     await window.api.db('setSetting', 'speedMode', f.speed.checked ? 'new' : 'old');
+    await window.api.db('setSetting', 'voice', { on: f.v_on.checked, lang: f.v_lang.value, speak: f.v_speak.value, voice: f.v_voice.value, rate: Number(f.v_rate.value) || 1, mic: f.v_mic.value, stt: f.v_stt.value });
     await window.api.db('setSetting', 'sendErrors', f.sendErrors.checked);
     await window.api.db('setSetting', 'shareChats', f.shareChats.checked);
     await window.api.db('setSetting', 'autoUpdate', f.autoUpdate.checked);
@@ -571,7 +620,119 @@ async function appTab(root) {
   root.append(bar);
 }
 
-const TABS = { settings: settingsTab, keys: keysTab, memory: memoryTab, about: aboutTab, app: appTab, notes: notesTab, report: reportTab };
+// ---- Tools: every everyday tool on the left (what it does, how to ask, how often used), its log on the right.
+// "Chats" is the full chat history of every window, kept in the database.
+const TOOLS = [
+  { id: 'timer', name: 'Timer', say: 'set a timer for 10 minutes', ic: '<circle cx="12" cy="13" r="8"/><path d="M12 9v4l2 2M9 2h6"/>' },
+  { id: 'alarm', name: 'Alarms', say: 'wake me up at 6:30 am', ic: '<circle cx="12" cy="13" r="7"/><path d="M12 10v3l2 1M4 4 2 6M20 4l2 2"/>' },
+  { id: 'remind', name: 'Reminders', say: 'remind me at 5 pm to call mom', ic: '<path d="M6 16V11a6 6 0 1 1 12 0v5l2 2H4zM10 21h4"/>' },
+  { id: 'stopwatch', name: 'Stopwatch', say: 'start a stopwatch', ic: '<circle cx="12" cy="13" r="8"/><path d="M12 13V9M10 2h4"/>' },
+  { id: 'note', name: 'Notes', say: 'take a note buy milk', ic: '<path d="M5 4h10l4 4v12H5z"/><path d="M9 12h6M9 16h4"/>' },
+  { id: 'play_music', name: 'Music', say: 'play some music', ic: '<path d="M9 18V6l10-2v12"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="16.5" cy="16" r="2.5"/>' },
+  { id: 'world_time', name: 'World clock', say: 'what time is it in tokyo', ic: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/>' },
+  { id: 'quick', name: 'Coin, dice, numbers', say: 'flip a coin', ic: '<rect x="4" y="4" width="16" height="16" rx="3"/><path d="M9 9h.01M15 15h.01M15 9h.01M9 15h.01"/>' },
+  { id: 'chat_send', name: 'Send to a contact', say: 'send that pdf to kevin on whatsapp', ic: '<path d="M22 2 11 13M22 2l-7 20-4-9-9-4z"/>' },
+];
+async function toolsTab(root) {
+  const counts = await window.api.db('toolCounts').catch(() => ({}));
+  const wrap = el('div', 'tools2');
+  const list = el('div', 'tl-list'), pane = el('div', 'tl-log');
+  const svg = (d) => `<svg viewBox="0 0 24 24" aria-hidden="true">${d}</svg>`;
+  const rows = TOOLS;
+  const show = async (t, b) => {
+    list.querySelectorAll('.tl-item').forEach((x) => x.classList.toggle('on', x === b));
+    pane.replaceChildren(el('div', 'tl-h', t.name));
+    if (t.id === '__chats') {
+      const q = el('input', 'tl-q'); q.placeholder = 'Search your chats…'; q.setAttribute('aria-label', 'Search chats');
+      const box = el('div', 'tl-rows');
+      const load = async () => {
+        const items = await window.api.db('chatHistory', 300, q.value.trim());
+        box.replaceChildren();
+        for (const c of items) {
+          const r = el('div', 'tl-row');
+          r.append(el('small', '', `${new Date(c.ts).toLocaleString()} · ${c.cid === 'main' ? 'main window' : c.cid}`), el('b', '', c.task));
+          if (c.say) r.append(el('span', '', c.say.slice(0, 400)));
+          box.append(r);
+        }
+        if (!items.length) box.append(el('div', 'empty', q.value ? 'No chat matches that.' : 'No chats yet.'));
+      };
+      q.oninput = () => { clearTimeout(q._t); q._t = setTimeout(load, 200); };
+      pane.append(q, box);
+      return load();
+    }
+    pane.append(el('div', 'muted', `Say: "${t.say}"`));
+    const items = await window.api.db('toolLogs', t.id, 200);
+    const box = el('div', 'tl-rows');
+    for (const l of items) {
+      const r = el('div', `tl-row${l.ok ? '' : ' bad'}`);
+      r.append(el('small', '', `${new Date(l.ts).toLocaleString()} · ${ago(l.ts)}`), el('b', '', l.result), l.request ? el('span', '', l.request) : '');
+      box.append(r);
+    }
+    if (!items.length) box.append(el('div', 'empty', `Not used yet. Try "${t.say}".`));
+    pane.append(box);
+  };
+  for (const t of rows) {
+    const b = el('button', 'tl-item'); b.type = 'button';
+    b.innerHTML = svg(t.ic);
+    const txt = el('span', 'tl-t'); txt.append(el('b', '', t.name), el('small', '', t.id === '__chats' ? 'history' : counts[t.id] ? `${counts[t.id].n} uses · ${ago(counts[t.id].last)}` : 'not used yet'));
+    b.append(txt);
+    b.onclick = () => show(t, b);
+    list.append(b);
+  }
+  wrap.append(list, pane);
+  root.append(wrap);
+  show(rows[0], list.firstChild);
+}
+
+// ---- Chats (like ChatGPT's chat list): every conversation by its first question, newest first. Open one to read the
+// questions and answers with their dates; "Continue this chat" brings it back into the main window (and the AI's memory).
+async function chatsTab(root) {
+  const wrap = el('div', 'tools2');
+  const side = el('div', 'tl-list'), pane = el('div', 'tl-log');
+  const q = el('input', 'tl-q'); q.placeholder = 'Search chats…'; q.setAttribute('aria-label', 'Search chats');
+  const list = el('div', 'tl-list');
+  const day = (ts) => { const d = new Date(ts), t = new Date(); const y = new Date(t); y.setDate(t.getDate() - 1);
+    return d.toDateString() === t.toDateString() ? 'Today' : d.toDateString() === y.toDateString() ? 'Yesterday' : d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: d.getFullYear() === t.getFullYear() ? undefined : 'numeric' }); };
+  const open = async (s, b) => {
+    list.querySelectorAll('.tl-item').forEach((x) => x.classList.toggle('on', x === b));
+    const turns = await window.api.db('sessionTurns', s.s);
+    pane.replaceChildren(el('div', 'tl-h', s.title.length > 80 ? `${s.title.slice(0, 80)}…` : s.title),
+      el('div', 'muted', `${new Date(s.start).toLocaleString()} · ${turns.length} message${turns.length === 1 ? '' : 's'}`));
+    const box = el('div', 'tl-rows chat-rows');
+    for (const t of turns) {
+      const qa = el('div', 'chat-qa');
+      const you = el('div', 'chat-q'); you.append(el('small', '', new Date(t.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })), el('span', '', t.task));
+      qa.append(you);
+      if (t.say) qa.append(el('div', 'chat-a', t.say));
+      box.append(qa);
+    }
+    const go = el('button', 'tc-btn chat-go', 'Continue this chat'); go.type = 'button';
+    go.onclick = () => { dispatchEvent(new CustomEvent('genisys-continue', { detail: s.s })); render('close'); };
+    pane.append(box, go);
+  };
+  const load = async () => {
+    const items = await window.api.db('chatSessions', 200, q.value.trim());
+    list.replaceChildren();
+    let lastDay = '';
+    for (const s of items) {
+      const d = day(s.last);
+      if (d !== lastDay) { list.append(el('div', 'chat-day', d)); lastDay = d; }
+      const b = el('button', 'tl-item'); b.type = 'button';
+      const txt = el('span', 'tl-t'); txt.append(el('b', '', s.title.length > 46 ? `${s.title.slice(0, 46)}…` : s.title), el('small', '', `${s.n} message${s.n === 1 ? '' : 's'} · ${new Date(s.last).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`));
+      b.append(txt); b.onclick = () => open(s, b);
+      list.append(b);
+    }
+    if (!items.length) list.append(el('div', 'empty', q.value ? 'No chat matches that.' : 'No chats yet.'));
+    const first = list.querySelector('.tl-item'); if (first) first.click(); else pane.replaceChildren();
+  };
+  q.oninput = () => { clearTimeout(q._t); q._t = setTimeout(load, 250); };
+  side.append(q, list);
+  wrap.append(side, pane);
+  root.append(wrap);
+  load();
+}
+
+const TABS = { chats: chatsTab, tools: toolsTab, settings: settingsTab, keys: keysTab, memory: memoryTab, about: aboutTab, app: appTab, notes: notesTab, report: reportTab };
 // Opens the settings panel on a page; "close" (or unknown) hides it.
 export async function render(name) {
   const open = !!TABS[name];

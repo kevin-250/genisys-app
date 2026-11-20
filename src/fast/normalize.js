@@ -6,7 +6,7 @@ const PHRASES = [
   /\bi (?:want|need|would like|wanna|d like) (?:you )?to\b/g,
   /\bi (?:want|need|wanna)\b/g,
   /\b(?:please|pls|plz|kindly|genisys)\b/g,
-  /^\s*(?:hey|hi|hello|ok|okay)\b[,\s]*/g,       // greetings only at the start ("ok go lyrics" keeps its "ok")
+  /^\s*(?:(?:hey|hi|hello|ok|okay)\b[,!.\s]*)+/g,  // greetings only at the start, any number ("hello hi what time…"); "ok go lyrics" keeps its "ok"
   /\s+(?:now|quickly|thanks|thank you)\s*$/g,      // and closers only at the end
   /\s+for me\b(?=\s*$)/g,
 ];

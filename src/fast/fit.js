@@ -1,6 +1,6 @@
 // Fast providers (Groq…) only take prompts under FAST_CAP chars (main.js). When the history is just over it, shrink old
 // step results and replies so the call still goes to Groq (seconds) instead of the slow free models (up to a minute).
-export const FAST_CAP = 18000;
+export const FAST_CAP = 26000; // ~6.5k tokens + 1k reply fits Groq's free 8k-token/min per key; over it, OpenRouter (slow) answers
 export function fitFast(history, keep = [], cap = FAST_CAP, cut = 600) {
   const size = () => JSON.stringify(history).length;
   // The newest step results and reply stay whole: a short answer ("yes", "ep1") needs the paths found just before it.

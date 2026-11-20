@@ -1,0 +1,34 @@
+{
+  "name": "weather",
+  "description": "The weather now or tomorrow for a place (empty = where the PC is), answered in the app.",
+  "triggers": [
+    "weather",
+    "forecast",
+    "rain",
+    "temperature",
+    "hot",
+    "cold"
+  ],
+  "params": {
+    "place": {
+      "type": "string",
+      "required": false
+    },
+    "when": {
+      "type": "enum",
+      "required": false,
+      "values": [
+        "today",
+        "tomorrow"
+      ]
+    },
+    "ask": {
+      "type": "string",
+      "required": false
+    }
+  },
+  "destructive": false,
+  "needs_ai": false,
+  "paths": [],
+  "native": "weather"
+}

@@ -1,0 +1,14 @@
+{
+  "name": "calendar",
+  "description": "Show the calendar inside Genisys: this month, today, and upcoming alarms and reminders.",
+  "triggers": [
+    "calendar",
+    "date",
+    "month"
+  ],
+  "params": {},
+  "destructive": false,
+  "needs_ai": false,
+  "paths": [],
+  "native": "calendar"
+}

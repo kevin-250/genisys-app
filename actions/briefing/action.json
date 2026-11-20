@@ -1,0 +1,16 @@
+{
+  "name": "briefing",
+  "description": "A summary of the user's day: date, weather, today's alarms and reminders, timers, to-dos, notes, shopping list.",
+  "triggers": [
+    "good morning",
+    "my day",
+    "briefing",
+    "brief me",
+    "summary"
+  ],
+  "params": {},
+  "destructive": false,
+  "needs_ai": false,
+  "paths": [],
+  "native": "briefing"
+}

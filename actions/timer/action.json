@@ -1,0 +1,47 @@
+{
+  "name": "timer",
+  "description": "Countdown timers that ring when done: op set (seconds, label = the name the user gave), status, pause / resume / cancel (id = one timer, none = all).",
+  "triggers": [
+    "timer",
+    "countdown",
+    "minutes",
+    "left"
+  ],
+  "params": {
+    "op": {
+      "type": "enum",
+      "required": true,
+      "values": [
+        "set",
+        "status",
+        "cancel",
+        "pause",
+        "resume"
+      ]
+    },
+    "seconds": {
+      "type": "int",
+      "required": false
+    },
+    "label": {
+      "type": "string",
+      "required": false
+    },
+    "total": {
+      "type": "int",
+      "required": false
+    },
+    "id": {
+      "type": "string",
+      "required": false
+    },
+    "all": {
+      "type": "string",
+      "required": false
+    }
+  },
+  "destructive": false,
+  "needs_ai": false,
+  "paths": [],
+  "native": "timer"
+}

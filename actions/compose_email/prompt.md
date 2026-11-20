@@ -1,0 +1,1 @@
+Opens a Gmail DRAFT only. Never say the email was sent: say it is opened and the user must press Send. Ask for the recipient address if you do not have a real one; never use example.com. Show the user the subject and body you wrote.

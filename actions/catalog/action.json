@@ -1,0 +1,13 @@
+{
+  "name": "catalog",
+  "description": "Show what Genisys knows about this PC: counts of apps, Chrome apps, Store apps, programs, sites, files and folders, or the best matches for a word (e.g. \"catalog spotify\"). Also rescans.",
+  "triggers": ["catalog"],
+  "params": {
+    "op": { "type": "enum", "values": ["summary", "search", "rescan", "predict", "label", "label_off", "confusions"], "required": true },
+    "query": { "type": "string", "required": false }
+  },
+  "destructive": false,
+  "needs_ai": false,
+  "paths": [],
+  "native": "catalog"
+}

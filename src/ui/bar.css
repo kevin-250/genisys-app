@@ -1,0 +1,118 @@
+/* Tailwind for the React prompt bar. No preflight: the rest of the app keeps its own base styles. */
+@import "tailwindcss/theme.css";
+@import "tailwindcss/utilities.css" source(none);
+@source "./";
+
+/* the app's colours as Tailwind tokens: bg-brand, text-fg/60, ring-brand/40 … */
+@theme inline {
+  --color-fg: var(--text);
+  --color-brand: var(--accent);
+  --color-brand-ink: var(--accent-ink);
+  --color-surface: var(--solid);
+  --color-danger: var(--red);
+  /* the names prompt-kit / shadcn components use, on the app's own palette (light and dark follow the theme) */
+  --color-foreground: var(--text);
+  --color-muted-foreground: var(--muted);
+  --color-primary: var(--text);
+  --color-muted: color-mix(in srgb, var(--text) 8%, transparent);
+  --color-popover: var(--solid);
+  --color-popover-foreground: var(--text);
+  --spacing-1\.75: 0.4375rem;
+  --animate-collapsible-down: collapsible-down 0.2s cubic-bezier(0.32, 0.72, 0, 1);
+  --animate-collapsible-up: collapsible-up 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+}
+@keyframes collapsible-down { from { height: 0; } to { height: var(--radix-collapsible-content-height); } }
+@keyframes collapsible-up { from { height: var(--radix-collapsible-content-height); } to { height: 0; } }
+
+#bar-host { display: contents; }
+
+/* ---- the AI's work trace (src/ui/Trace.jsx): prompt-kit ChainOfThought / Reasoning / Steps + Source ---- */
+.trace { margin: 6px 0 10px; padding: 10px 14px 12px; border: 1px solid color-mix(in srgb, var(--text) 9%, transparent); border-radius: 16px;
+  background: color-mix(in srgb, var(--text) 2.5%, transparent); font-family: var(--ui, inherit); }
+.trace button, .trace a { font: inherit; color: inherit; }
+.trace .lorb:empty { display: none; }
+.trace .lorb { width: 18px; height: 18px; flex: none; }
+.pk-shimmer { background: linear-gradient(90deg, var(--muted) 0%, var(--text) 50%, var(--muted) 100%); background-size: 200% 100%;
+  -webkit-background-clip: text; background-clip: text; color: transparent; animation: pk-shimmer 1.6s linear infinite; }
+@keyframes pk-shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+.pk-pop { animation: pk-pop .15s cubic-bezier(0.32, 0.72, 0, 1); transform-origin: var(--radix-hover-card-content-transform-origin); }
+@keyframes pk-pop { from { opacity: 0; transform: scale(.96); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .pk-shimmer { animation: none; color: var(--muted); background: none; } .pk-pop { animation: none; } }
+
+/* ---- the prompt input (main / agent windows): shadcn prompt-input layout, an InputGroup with the text on top and a
+   row of icon buttons under it. The old hint buttons (New agent, Attach, Actions, Stop, Help) are hidden: the row, the
+   app menu and the keys (Ctrl+Alt+N, /, Esc, F1) do those jobs. ---- */
+body:not(.m-runner) .foot {
+  position: relative; margin: 6px 14px 14px; padding: 0; border-radius: 22px;
+  border: 1px solid color-mix(in srgb, var(--text) 11%, transparent);
+  background: color-mix(in srgb, var(--solid) 82%, var(--text) 4%);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.05), 0 8px 24px -12px rgb(0 0 0 / 0.18);
+  transition: border-color .15s cubic-bezier(.4, 0, .2, 1), box-shadow .15s cubic-bezier(.4, 0, .2, 1);
+}
+body:not(.m-runner) .foot:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 12%, transparent), 0 8px 24px -12px rgb(0 0 0 / 0.22);
+}
+body.m-agent:not(.m-runner) .foot { margin: 4px 8px 8px; border-radius: 18px; }
+body:not(.m-runner) .foot .hints { display: none; }
+body:not(.m-runner) .foot .atts { padding: 8px 10px 0; }
+.pi-ico { display: inline-grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 999px; cursor: pointer;
+  color: color-mix(in srgb, var(--text) 75%, transparent); background-color: transparent; outline: none; }
+.pi-ico:hover { color: var(--text); } .pi-ico svg { width: 16px; height: 16px; }
+.pi-ico:focus-visible, .pi-bar button:focus-visible { box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent); }
+.pi-bar #mic { width: 32px; height: 32px; } .pi-bar #mic svg { width: 16px; height: 16px; }
+.pi-bar #send { width: 32px; height: 32px; } .pi-bar #send svg { width: 16px; height: 16px; }
+
+/* ---- the top bar: title + notes bell + one menu (the other icons stay in the page, hidden, for the menu to click) ---- */
+#menu-host { display: contents; }
+#bar .icons > .ico:not([data-open="notes"]):not(.app-menu) { display: none; }
+#bar .icons > .ico[data-open="notes"]:not(:has(.count:not(:empty))) { display: none; } /* the bell only when there is something new */
+.app-menu svg { width: 16px; height: 16px; }
+/* the second row: the orb, the status and a new chat (the "genisys | agent main@local" labels go) */
+body.m-main .head .pill, body.m-main .head #title, body.m-main .head #host, body.m-main .head #model { display: none; }
+
+/* ---- send / stop ---- */
+#send .i-stop { display: none; }
+#form.busy #send { background: var(--red); color: #fff; animation: send-pulse 1.4s ease-in-out infinite; }
+#form.busy #send .i-up { display: none; }
+#form.busy #send .i-stop { display: block; width: 12px; height: 12px; }
+#form:has(#input:placeholder-shown) #send:not(:hover) { background: color-mix(in srgb, var(--text) 14%, transparent); color: var(--text); box-shadow: none; }
+#form.busy:has(#input:placeholder-shown) #send { background: var(--red); color: #fff; }
+@keyframes send-pulse { 50% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--red) 0%, transparent), 0 0 0 0 transparent; } 0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--red) 45%, transparent); } }
+
+/* the Alt+Space runner keeps its one-line bar: text, mic, send (no attach / actions / model / effort there) */
+body.m-runner #form { flex-direction: row; align-items: center; gap: 6px; }
+body.m-runner .pi-bar { display: contents; }
+body.m-runner .pi-bar > :not(#mic):not(#send) { display: none; }
+body.m-runner #input { padding: 7px 4px; min-height: 36px; }
+
+/* ---- voice: the bar becomes a listening pill (level bars); Enter sends, any letter grows it back ---- */
+#vpill { display: none; }
+.foot.voice #vpill { display: flex; flex: 1; align-items: center; justify-content: center; gap: 4px; height: 36px; }
+#vpill i { width: 4px; height: calc(5px + var(--l, 0) * 22px); border-radius: 2px; background: var(--accent); transition: height .07s linear; animation: vbreath 1.6s ease-in-out infinite; }
+#vpill i:nth-child(2n) { animation-delay: -.4s; } #vpill i:nth-child(3n) { animation-delay: -.8s; }
+#vpill i:nth-child(1) { --d: 0s } #vpill i:nth-child(2) { --d: .08s } #vpill i:nth-child(3) { --d: .16s } #vpill i:nth-child(4) { --d: .24s } #vpill i:nth-child(5) { --d: .32s } #vpill i:nth-child(6) { --d: .40s } #vpill i:nth-child(7) { --d: .48s }
+.foot.vthink #vpill i { height: 5px; background: var(--text); animation: vwave .9s ease-in-out infinite; animation-delay: var(--d); }
+@keyframes vbreath { 50% { opacity: .5; } }
+@keyframes vwave { 0%, 100% { transform: translateY(0); opacity: .4; } 50% { transform: translateY(-5px); opacity: 1; } }
+.foot.voice #input { position: absolute; width: 1px; opacity: 0; pointer-events: none; } /* still focused: the first key typed lands here */
+.foot.vmsg #input::placeholder { color: var(--accent); opacity: 1; }
+.foot.voice #mic { background: var(--accent); color: var(--accent-ink); }
+.foot.voice #mic::after { content: ''; position: absolute; inset: -4px; border-radius: 999px; border: 2px solid var(--accent); opacity: 0; animation: mic-ring 1.4s cubic-bezier(.32, .72, 0, 1) infinite; }
+#mic { position: relative; }
+@keyframes mic-ring { 0% { transform: scale(.9); opacity: .55; } 100% { transform: scale(1.25); opacity: 0; } }
+
+/* ---- Alt+Space runner: one compact bar; while listening it is a 100 px pill that grows into the bar ---- */
+body.m-runner .foot { position: relative; padding: 6px 7px 6px 16px; border: 0; background: none; transition: padding .3s cubic-bezier(.32, .72, 0, 1); }
+body.m-runner.open .foot { border-top: 1px solid color-mix(in srgb, var(--text) 9%, transparent); }
+body.m-runner #form { align-items: center; }
+body.m-runner .card { align-self: center; width: 100%; transition: width .3s cubic-bezier(.32, .72, 0, 1); }
+body.m-runner.voicing:not(.open) .card { width: 100px; }
+body.m-runner.voicing:not(.open) .foot { padding: 5px 12px; }
+body.m-runner:not(.open) .foot.voice #mic, body.m-runner:not(.open) .foot.voice #send { display: none; } /* the 100 px pill: click it to send */
+.foot.voice #vpill { cursor: pointer; }
+
+@media (prefers-reduced-motion: reduce) {
+  #vpill i, .foot.voice #mic::after, #form.busy #send { animation: none !important; transition: none; }
+  body.m-runner .card, body.m-runner .foot, body:not(.m-runner) .foot { transition: none; }
+}

@@ -55,7 +55,7 @@ export function mountDots() {
   };
   const loop = (t) => {
     raf = requestAnimationFrame(loop);
-    if (t - last < 40 || document.hidden || !document.hasFocus()) return; // ~25fps, idle when unfocused
+    if (t - last < 40 || document.hidden || !document.hasFocus() || document.body.classList.contains('chatting')) return; // ~25fps, idle when unfocused or hidden by a chat
     const dt = Math.min(0.1, (t - last) / 1000); last = t;
     draw(t, dt);
   };

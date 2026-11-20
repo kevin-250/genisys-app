@@ -1,0 +1,78 @@
+{
+  "name": "alarm",
+  "description": "Alarms that ring at a time (op set, at = Unix ms), list alarms and reminders (op list), cancel alarms (op cancel; kind reminder cancels reminders).",
+  "triggers": [
+    "alarm",
+    "wake",
+    "alarms",
+    "reminders"
+  ],
+  "params": {
+    "op": {
+      "type": "enum",
+      "required": true,
+      "values": [
+        "set",
+        "list",
+        "cancel",
+        "ask"
+      ]
+    },
+    "at": {
+      "type": "int",
+      "required": false
+    },
+    "label": {
+      "type": "string",
+      "required": false
+    },
+    "kind": {
+      "type": "enum",
+      "required": false,
+      "values": [
+        "alarm",
+        "reminder"
+      ]
+    },
+    "time": {
+      "type": "string",
+      "required": false
+    },
+    "ap": {
+      "type": "string",
+      "required": false
+    },
+    "h": {
+      "type": "int",
+      "required": false
+    },
+    "m": {
+      "type": "int",
+      "required": false
+    },
+    "day": {
+      "type": "enum",
+      "required": false,
+      "values": [
+        "today",
+        "tomorrow"
+      ]
+    },
+    "past": {
+      "type": "string",
+      "required": false
+    },
+    "id": {
+      "type": "string",
+      "required": false
+    },
+    "all": {
+      "type": "string",
+      "required": false
+    }
+  },
+  "destructive": false,
+  "needs_ai": false,
+  "paths": [],
+  "native": "alarm"
+}

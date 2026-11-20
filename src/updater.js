@@ -41,8 +41,8 @@ export async function releaseNotes(version) {
   } catch { return ''; }
 }
 
-/** { log, enabled(): bool, isIdle(): bool, report(err), found(version) } -> { checkNow, installNow } */
-export function startUpdater({ log, enabled, isIdle, report, found }) {
+/** { log, enabled(): bool, isIdle(): bool, report(err), found(version), downloaded(version) } -> { checkNow, installNow, readyVersion } */
+export function startUpdater({ log, enabled, isIdle, report, found, downloaded }) {
   if (!app.isPackaged) return null;
   const dir = path.join(app.getPath('userData'), 'updates');
   let ready = null, busy = null, told = null, now = false;
@@ -70,6 +70,7 @@ export function startUpdater({ log, enabled, isIdle, report, found }) {
       }
       ready = { file, version: a.version };
       log('update ready', a.version);
+      downloaded?.(a.version); // the app shows Restart & update
       tryInstall();
     } catch (e) { log('update failed', e.message); report?.(e); if (force) throw e; }
   }
@@ -85,9 +86,14 @@ export function startUpdater({ log, enabled, isIdle, report, found }) {
 
   // Every 5 min (12 GitHub API calls an hour, under its 60/hour limit); a newer version downloads by itself.
   setInterval(() => check(), 5 * 60e3);
+  // the moment the PC is online again (Wi-Fi back, cable in), and shortly after start: look for an update right away
+  let wasOnline = false;
+  const watch = () => { const on = net.isOnline(); if (on && !wasOnline) check().catch(() => {}); wasOnline = on; };
+  setTimeout(watch, 8000); setInterval(watch, 15000);
   setInterval(tryInstall, 10 * 60e3);      // a downloaded update waits until Genisys is idle
 
   return {
+    readyVersion: () => ready?.version || null,
     // { current, latest, newer, ready }: only asks GitHub, the download starts in the background
     async checkNow() {
       const a = await latest();

@@ -1,0 +1,7 @@
+{
+  "name": "remind",
+  "description": "Set a reminder: a Windows notification at a time (at = Unix time in milliseconds) with a short text.",
+  "triggers": ["remind", "reminder", "timer", "alarm", "later"],
+  "params": { "at": { "type": "int", "required": true }, "text": { "type": "string", "required": false } },
+  "destructive": false, "needs_ai": false, "paths": [], "native": "remind"
+}

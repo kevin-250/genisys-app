@@ -1,0 +1,19 @@
+{
+  "name": "overview",
+  "description": "Show several of the user's things at once in a grid: parts = comma list of timers, alarms, reminders, notes, shopping, todo, stopwatch.",
+  "triggers": [
+    "show",
+    "all",
+    "my"
+  ],
+  "params": {
+    "parts": {
+      "type": "string",
+      "required": true
+    }
+  },
+  "destructive": false,
+  "needs_ai": false,
+  "paths": [],
+  "native": "overview"
+}

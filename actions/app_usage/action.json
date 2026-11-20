@@ -1,0 +1,20 @@
+{
+  "name": "app_usage",
+  "description": "How much RAM (and CPU time) a running app uses, all its processes counted.",
+  "triggers": [
+    "ram",
+    "memory",
+    "using",
+    "cpu"
+  ],
+  "params": {
+    "name": {
+      "type": "string",
+      "required": true
+    }
+  },
+  "destructive": false,
+  "needs_ai": false,
+  "paths": [],
+  "native": "app_usage"
+}

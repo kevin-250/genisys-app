@@ -66,3 +66,14 @@ test('the prompt keeps AI turns, in order, and marks the latest listing', () => 
   assert.ok(p.indexOf('MOST RECENT LISTING') > p.indexOf('show me all zips again'), 'marker is on the newest listing');
   assert.ok(/never say they are already deleted/.test(p));
 });
+
+// ---- "open it" follows the file that was just created (the kevin cv.pdf chat) ----
+test('"open it" means the one file just created or listed; more than one row is ambiguous', () => {
+  const c = makeConvo();
+  c.add({ task: 'create file pdf called kevin cv in documents', route: 'router', action: 'create_file', say: 'created', rows: [{ text: 'kevin cv.pdf | create_file', path: 'C:\\Users\\k\\Documents\\kevin cv.pdf' }], n: 1 });
+  for (const t of ['open it', 'then open it', 'open that file', 'please open the pdf', 'can you open it', 'Open it.']) assert.equal(c.openRef(t)?.path, 'C:\\Users\\k\\Documents\\kevin cv.pdf', t);
+  for (const t of ['open spotify', 'open it in chrome', 'open the documents folder']) assert.equal(c.openRef(t), null, t);
+  c.add({ task: 'list', route: 'fast', rows: zipRows, n: 3 });
+  assert.equal(c.openRef('open it'), null, 'three rows: which one?');
+  assert.ok(c.prompt().includes('the file just created'));
+});

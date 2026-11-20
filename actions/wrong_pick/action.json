@@ -1,0 +1,10 @@
+{
+  "name": "wrong_pick",
+  "description": "The user says the app/site just opened was the wrong one: \"no\", \"not that\", \"the other one\", \"no, I meant spotify\". Learns from it and opens what they meant.",
+  "triggers": ["wrong", "other one", "not that"],
+  "params": { "text": { "type": "string", "required": false } },
+  "destructive": false,
+  "needs_ai": false,
+  "paths": [],
+  "native": "wrong_pick"
+}

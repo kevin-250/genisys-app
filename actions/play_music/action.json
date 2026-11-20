@@ -1,0 +1,30 @@
+{
+  "name": "play_music",
+  "description": "Play music with what THIS PC has: a named app if installed (spotify, youtube, vlc, aimp...), else the user own songs from the Music folder, else YouTube. query = genre/artist/song or empty.",
+  "triggers": [
+    "play",
+    "music",
+    "song",
+    "songs",
+    "listen",
+    "playlist"
+  ],
+  "params": {
+    "query": {
+      "type": "string",
+      "required": false
+    },
+    "app": {
+      "type": "string",
+      "required": false
+    },
+    "path": {
+      "type": "path",
+      "required": false
+    }
+  },
+  "destructive": false,
+  "needs_ai": false,
+  "paths": [],
+  "native": "play_music"
+}

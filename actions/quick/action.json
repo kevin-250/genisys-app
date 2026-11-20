@@ -1,0 +1,49 @@
+{
+  "name": "quick",
+  "description": "Quick answers: coin, dice (n), number (min, max), days_until (what, date), calc (what = the sum, e.g. 15% of 2400).",
+  "triggers": [
+    "coin",
+    "dice",
+    "random",
+    "number",
+    "days until"
+  ],
+  "params": {
+    "op": {
+      "type": "enum",
+      "required": true,
+      "values": [
+        "coin",
+        "dice",
+        "number",
+        "days_until",
+        "calc",
+        "when"
+      ]
+    },
+    "n": {
+      "type": "int",
+      "required": false
+    },
+    "min": {
+      "type": "int",
+      "required": false
+    },
+    "max": {
+      "type": "int",
+      "required": false
+    },
+    "what": {
+      "type": "string",
+      "required": false
+    },
+    "date": {
+      "type": "string",
+      "required": false
+    }
+  },
+  "destructive": false,
+  "needs_ai": false,
+  "paths": [],
+  "native": "quick"
+}

@@ -1,0 +1,7 @@
+{
+  "name": "world_time",
+  "description": "The current time in a city or country, from the PC clock (never guess times).",
+  "triggers": ["time", "clock", "timezone", "what time"],
+  "params": { "place": { "type": "string", "required": true } },
+  "destructive": false, "needs_ai": false, "paths": [], "native": "world_time"
+}

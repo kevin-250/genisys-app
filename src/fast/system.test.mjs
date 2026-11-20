@@ -109,7 +109,7 @@ test('router: whole request only', () => {
 test('fitFast shrinks old steps under the fast cap, never the tasks', () => {
   const h = [{ role: 'system', content: 's'.repeat(9000) }, { role: 'user', content: 'open trigger' }, { role: 'assistant', content: 'a'.repeat(5000) },
     { role: 'user', content: 'r'.repeat(5000) }, { role: 'user', content: 'Episode 1' }];
-  fitFast(h, [1, 4]);
+  fitFast(h, [1, 4], 18000);
   assert.ok(JSON.stringify(h).length < 18000);
   assert.equal(h[0].content.length, 9000); assert.equal(h[1].content, 'open trigger'); assert.equal(h[4].content, 'Episode 1');
 });
@@ -130,7 +130,7 @@ test('numbers in the request pick between near-identical names', () => {
 test('fitFast keeps the newest results whole, cuts older ones', () => {
   const h = [{ role: 'system', content: 's'.repeat(8000) }, { role: 'user', content: 'old task' }, { role: 'user', content: 'o'.repeat(6000) },
     { role: 'user', content: 'play ep1' }, { role: 'assistant', content: 'a'.repeat(300) }, { role: 'user', content: 'r'.repeat(5000) }, { role: 'user', content: 'yes' }];
-  fitFast(h, [1, 3, 6]);
+  fitFast(h, [1, 3, 6], 18000);
   assert.ok(h[2].content.length < 700, 'old results cut');
   assert.equal(h[5].content.length, 5000, 'latest results kept for the short reply');
 });

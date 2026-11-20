@@ -19,7 +19,7 @@ module.exports = {
     prune: true,
     executableName: 'genisys',
     icon: 'assets/icon', // picks assets/icon.ico on Windows
-    extraResource: ['assets', 'actions'], // window/toast icons + the action folders, read from process.resourcesPath
+    extraResource: ['assets', 'actions', 'voice'], // window/toast icons, the action folders and the offline voices, read from process.resourcesPath
   },
   hooks: {
     // Slimmer package: keep only the en-US locale, drop the Chromium license page, and drop the DirectX shader

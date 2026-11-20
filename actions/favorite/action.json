@@ -1,0 +1,35 @@
+{
+  "name": "favorite",
+  "description": "Save, forget or list the user's favorite apps: browser, browser profile, email, chat, music, notes, editor... e.g. \"my favorite browser is chrome\", \"make kevin my default chrome profile\". Favorites fill in what a request leaves out; a named app/browser/profile always wins.",
+  "triggers": [
+    "favorite",
+    "default"
+  ],
+  "params": {
+    "op": {
+      "type": "enum",
+      "values": [
+        "set",
+        "forget",
+        "list"
+      ],
+      "required": true
+    },
+    "category": {
+      "type": "string",
+      "required": false
+    },
+    "value": {
+      "type": "string",
+      "required": false
+    },
+    "browser": {
+      "type": "string",
+      "required": false
+    }
+  },
+  "destructive": false,
+  "needs_ai": false,
+  "paths": [],
+  "native": "favorite"
+}

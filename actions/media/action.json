@@ -1,0 +1,34 @@
+{
+  "name": "media",
+  "description": "Control a player that is already open (PotPlayer, VLC, Spotify, the browser, Media Player): op play / pause / toggle / next / prev. app empty = whatever is playing now. Reads the real state first, never opens a second copy.",
+  "triggers": [
+    "play",
+    "pause",
+    "resume",
+    "continue",
+    "next",
+    "previous",
+    "skip"
+  ],
+  "params": {
+    "op": {
+      "type": "enum",
+      "required": true,
+      "values": [
+        "play",
+        "pause",
+        "toggle",
+        "next",
+        "prev"
+      ]
+    },
+    "app": {
+      "type": "string",
+      "required": false
+    }
+  },
+  "destructive": false,
+  "needs_ai": false,
+  "paths": [],
+  "native": "media"
+}

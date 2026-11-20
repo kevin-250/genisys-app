@@ -12,6 +12,9 @@ export function rowsFrom(data = '', paths = [], n = 10) {
 // "delete them / those / these / it / all of them": a delete that points at what was just listed, no names in it.
 export const DELETE_REF = /^(?:please\s+|pls\s+|now\s+)?(?:delete|remove|trash|bin|get rid of|erase)\s+(?:(?:all\s+)?(?:of\s+)?(?:them|those|these|it|that|this)(?:\s+(?:all|now|please|pls|too|again|ones|files?|zips?|items?))?)[.!\s]*$/i;
 
+// "open it", "open that file", "show it", "open this", "can you open it"
+export const OPEN_REF = /^(?:(?:please|pls|can you|could you|now|then)\s+)*(?:open|show|launch|run|view|start)\s+(?:it|that|this|the file|that file|this file|the pdf|that pdf|the document)(?:\s+(?:please|pls|now|again))?[.!?\s]*$/i;
+
 export function normalizeTurn(t = {}) {
   return {
     ts: Number(t.ts) || Date.now(),
@@ -45,6 +48,13 @@ export function makeConvo(initial = [], max = MAX_TURNS) {
     },
     // The turn that "them / those / it" means: the most recent one that listed rows. Never an older one.
     latestListing() { for (let i = turns.length - 1; i >= 0; i--) if (turns[i].rows.length) return turns[i]; return null; },
+    // every file / folder this chat made or showed, newest first (for "delete the genisys todo file" a few turns later)
+    knownPaths() {
+      const seen = new Set(), out = [];
+      const add = (p) => { if (p && !seen.has(p)) { seen.add(p); out.push(p); } };
+      for (let i = turns.length - 1; i >= 0; i--) for (const r of turns[i].rows) { add(r.path); if (r.path) add(String(r.path).replace(/[\\/][^\\/]+$/, '')); } // its folder too
+      return out;
+    },
     // "delete them" -> exactly the paths of the latest listing, or null when it is not a plain reference or not safe to do in code
     // (no listing, a row without a path, or a listing longer than what was kept: then the AI asks which ones).
     deleteRef(task) {
@@ -52,6 +62,13 @@ export function makeConvo(initial = [], max = MAX_TURNS) {
       const t = this.latestListing();
       if (!t || t.rows.some((r) => !r.path) || (t.n && t.n > t.rows.length)) return null;
       return { turn: t, paths: t.rows.map((r) => r.path), names: t.rows.map((r) => r.text.split(' | ')[0]) };
+    },
+    // "open it / open that / show it / run it" right after one file was listed or created: that file. More than one row = ambiguous (null).
+    openRef(task) {
+      if (!OPEN_REF.test(String(task || '').trim())) return null;
+      const t = this.latestListing();
+      if (!t || t.rows.length !== 1 || !t.rows[0].path) return null;
+      return { turn: t, path: t.rows[0].path, name: t.rows[0].text.split(' | ')[0] };
     },
     // Text for a model. skipRoutes: turns the model already has some other way (the full AI keeps its own chat history).
     // Only the last 2 turns list their rows; older ones are one line each. Oldest turns are dropped first to fit maxChars.
@@ -62,7 +79,7 @@ export function makeConvo(initial = [], max = MAX_TURNS) {
       const latest = this.latestListing();
       const block = (t, i, withRows) => {
         const p = Object.keys(t.params).length ? ` ${JSON.stringify(t.params)}` : '';
-        const lines = [`${i + 1}. user: "${t.task}"${t === latest ? '   <== MOST RECENT LISTING: "them / those / these / it / all of them" mean exactly its rows' : ''}`, `   genisys: ${t.action || 'answered'}${p}${t.say ? ` -> ${t.say}` : ''}`];
+        const lines = [`${i + 1}. user: "${t.task}"${t === latest ? '   <== MOST RECENT LISTING (a list, or the file just created): "them / those / these / it / that" mean exactly its rows' : ''}`, `   genisys: ${t.action || 'answered'}${p}${t.say ? ` -> ${t.say}` : ''}`];
         if (withRows && t.rows.length) { lines.push('   rows:'); for (const r of t.rows) lines.push(`   - ${r.text}${r.path ? ` (path: ${r.path})` : ''}`); }
         return lines.join('\n');
       };

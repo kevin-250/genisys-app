@@ -1,0 +1,24 @@
+{
+  "name": "stopwatch",
+  "description": "One stopwatch: op start, stop, status (time so far), reset.",
+  "triggers": [
+    "stopwatch",
+    "stop watch"
+  ],
+  "params": {
+    "op": {
+      "type": "enum",
+      "required": true,
+      "values": [
+        "start",
+        "stop",
+        "status",
+        "reset"
+      ]
+    }
+  },
+  "destructive": false,
+  "needs_ai": false,
+  "paths": [],
+  "native": "stopwatch"
+}

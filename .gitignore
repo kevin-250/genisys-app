@@ -96,3 +96,6 @@ default-keys.json
 
 # built installers (npm run release / installer\build-installer.bat)
 installer/dist/
+
+# Offline voice + speech-to-text files (~200 MB): node tools/fetch-voice.mjs downloads them (checked against tools/voice-manifest.json)
+voice/

@@ -1,15 +1,26 @@
-import { app, BrowserWindow, ipcMain, globalShortcut, screen, Notification, shell, webContents, Tray, Menu, dialog, nativeTheme } from 'electron';
+import { app, BrowserWindow, ipcMain, globalShortcut, screen, Notification, shell, webContents, Tray, Menu, dialog, nativeTheme, net, session } from 'electron';
+import http from 'node:http';
+import { makeClockStore } from './clockstore.js';
+import { learnMessages, parseLearned, habitLines } from './learn.js';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import Anthropic from '@anthropic-ai/sdk';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
-import { spawn } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
 import started from 'electron-squirrel-startup';
 import * as db from './db.js';
+import dns from 'node:dns';
+import { makeTts, VOICES } from './voice/tts.js';
+import { makeWhisper } from './voice/whisper.js';
 import seedKeys from '../default-keys.json';
 import { batName, fixCmd } from './memory.js';
 import { fuzzy } from './fuzzy.js';
 import { makeActions } from './fast/actions.js';
+import { shortcutLaunch, isShortcut } from './fast/shortcut.js';
+import { buildEntries, mergeScan, norm as catKey } from './fast/catalog.js';
+import { LABEL_KINDS, nameHash, needsLabel, labelMessages, parseLabels } from './fast/label.js';
+import { classifyShortcut, storeItems, programItems, bookmarkItems, recentItems } from './fast/catalogScan.js';
 import { scanFiles, hashSample } from './fast/files.js';
 import { createHash } from 'node:crypto';
 import { loadActions, validateParams, fillTemplate, routerLines, similarPrompt } from './fast/registry.js';
@@ -24,8 +35,13 @@ import { isFileTask } from './fast/intent.js';
 import { FAST_CAP } from './fast/fit.js';
 import { startUpdater, releaseNotes } from './updater.js';
 import { newer } from './version.js';
+import { isRisky } from './risky.js';
+import { textToHtml } from './fast/doc.js';
 
 // Diagnostics: if the app ever exits on its own, say who asked for it and why (also saved to %TEMP%\genisys-debug.log).
+// IPv4 first for every fetch (web search, AI, speech-to-text): on networks with a broken IPv6 route Node's fetch hung
+// until its timeout (Bing, Google News: 0 results) while browsers and curl quietly fell back to IPv4
+dns.setDefaultResultOrder('ipv4first');
 const dlog = (...a) => { const line = `[${new Date().toISOString()}] ${a.join(' ')}`; console.log('[genisys]', line); try { fs.appendFileSync(path.join(os.tmpdir(), 'genisys-debug.log'), line + '\n'); } catch {} };
 process.on('uncaughtException', (e) => { dlog('uncaughtException', e?.stack || e); cloud.reportError('crash', e); });
 process.on('unhandledRejection', (e) => { dlog('unhandledRejection', e?.stack || e); cloud.reportError('crash', e); });
@@ -110,7 +126,7 @@ async function checkModels(force) {
 const DB_OPS = ['getSetting', 'setSetting', 'remember', 'findMemory', 'findExact', 'listMemory', 'updateMemory', 'deleteMemory', 'useMemory',
   'listProfile', 'addProfile', 'updateProfile', 'deleteProfile', 'logTask', 'todayStats', 'failsToday',
   'listNotes', 'unseenNotes', 'markNotesSeen', 'deleteNote',
-  'cacheGet', 'cachePut', 'cacheUse', 'cacheDrop', 'cacheCount', 'cacheClear', 'scriptRecord', 'scriptsGood', 'convoAdd', 'convoRecent', 'convoClear'];
+  'cacheGet', 'cachePut', 'cacheUse', 'cacheDrop', 'cacheCount', 'cacheClear', 'scriptRecord', 'scriptsGood', 'appHints', 'chatHistory', 'toolLogs', 'toolCounts', 'chatSessions', 'sessionTurns', 'lastSession','convoAdd', 'convoRecent', 'convoClear', 'prefAll', 'prefSet', 'prefDel', 'catalogAll', 'catalogUse'];
 ipcMain.handle('db', (_e, op, ...args) => {
   if (!DB_OPS.includes(op)) throw new Error(`unknown db op ${op}`);
   const r = db[op](...args);
@@ -145,6 +161,7 @@ ipcMain.on('reportError', (_e, kind, message, stack) => cloud.reportError(kind =
 // Notes › Check for updates: newest GitHub release vs this version; installUpdate downloads (if needed) and installs it now.
 ipcMain.handle('checkUpdates', async () => { checkModels(true); return updater ? updater.checkNow() : { current: app.getVersion(), latest: null, dev: true }; });
 ipcMain.handle('installUpdate', () => updater?.installNow());
+ipcMain.handle('updateReady', () => updater?.readyVersion?.() || null); // a window that opens later still shows the button
 // Never from the forge build in out\ (testing it overwrote the installed app's Run entry, so Windows started the dev copy).
 const setAutostart = (on) => { if (app.isPackaged && !/\\out\\[^\\]+-win32-x64\\/i.test(process.execPath)) app.setLoginItemSettings({ openAtLogin: on, path: process.execPath, args: ['--autostart'] }); };
 ipcMain.handle('autostart', (_e, on) => { db.setSetting('autostart', on); setAutostart(on); return app.isPackaged; });
@@ -203,7 +220,7 @@ async function callCompat(p, key, model, messages, { think, maxTokens, timeoutMs
   const body = { model, messages, [p.tokensParam || 'max_completion_tokens']: maxTokens || (think ? 3000 : 1000), stream: false };
   if (/gpt-oss/i.test(model)) body.reasoning_effort = think ? 'medium' : 'low';
   const go = async (b) => {
-    const res = await fetch(p.url, { method: 'POST', headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' }, body: JSON.stringify(b), signal: AbortSignal.timeout(timeoutMs) });
+    const res = await fetch(p.url, { method: 'POST', headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' }, body: JSON.stringify(b), signal: sig(timeoutMs) });
     return { res, data: await res.json().catch(() => ({})) };
   };
   let r = await go(body);
@@ -293,15 +310,15 @@ async function callOwn({ provider, model, key, url }, messages, { think, maxToke
     // Effort is the speed/depth control on current Claude models (thinking stays adaptive); Haiku 4.5 doesn't take it.
     if (!/haiku/.test(model)) params.output_config = { effort: think ? 'high' : 'low' };
     const res = CLAUDE_FALLBACK.test(model)
-      ? await client.beta.messages.create({ ...params, betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' })
-      : await client.messages.create(params);
+      ? await client.beta.messages.create({ ...params, betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' }, { signal: aiCalls.getStore()?.signal })
+      : await client.messages.create(params, { signal: aiCalls.getStore()?.signal });
     if (res.stop_reason === 'refusal') throw new Error('Claude declined this request');
     const text = res.content.filter((b) => b.type === 'text').map((b) => b.text).join('');
     if (!text) throw new Error(res.stop_reason === 'max_tokens' ? 'reply was cut off (max tokens)' : 'empty reply');
     return { text, usage: res.usage };
   }
   const body = { model, messages, [OWN[provider].tokens || 'max_tokens']: maxTokens || (think ? 8000 : 2000) };
-  const res = await fetch(`${url}/chat/completions`, { method: 'POST', headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs) });
+  const res = await fetch(`${url}/chat/completions`, { method: 'POST', headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: sig(timeoutMs) });
   const data = await res.json().catch(() => ({}));
   const text = data.choices?.[0]?.message?.content;
   if (!res.ok || !text) throw new Error(data.error?.message || `HTTP ${res.status}`);
@@ -397,8 +414,9 @@ ipcMain.handle('freeModels', async () => {
 ipcMain.handle('context', (_e, task = '') => {
   const drives = 'CDEFGHIJ'.split('').filter((d) => fs.existsSync(`${d}:\\`)).map((d) => `${d}:`).join(' ');
   const where = ['home', 'desktop', 'documents', 'downloads', 'videos', 'pictures', 'music'].map((k) => `${k}=${app.getPath(k)}`).join('; ');
+  const favs = (() => { try { const f = db.prefAll(); return Object.entries(f).filter(([k]) => k.startsWith('fav:')).map(([k, v]) => `${k.slice(4).replace(':', ' ')}=${v}`).join(', '); } catch { return ''; } })();
   const prof = browserProfiles('chrome').map((p) => `${p.name} (${p.dir}${p.email ? `, ${p.email}` : ''})`).join('; ');
-  const head = `User: ${os.userInfo().username} on ${os.hostname()}, ${new Date().toString()}\nDrives: ${drives}\nFolders: ${where}${prof ? `\nChrome profiles: ${prof}` : ''}`;
+  const head = `User: ${os.userInfo().username} on ${os.hostname()}, ${new Date().toString()}\nDrives: ${drives}\nFolders: ${where}${prof ? `\nChrome profiles: ${prof}` : ''}${favs ? `\nUser favorites (use them when the request names no app/browser/profile; a named one always wins): ${favs}` : ''}`;
   if (!isFileTask(task)) return head;
   if (!pindex.ready) return `${head}\n${legacyTree()}`;
   const roots = [...new Set([...homeDirs(), path.join(os.homedir(), 'OneDrive'), ...myPaths().roots])].filter((r) => pindex.dirs.has(r));
@@ -452,6 +470,8 @@ ipcMain.handle('timing', (e, op, rec) => {
 });
 
 const aiHandler = async (e, messages, think, rec, opts = {}) => {
+  // no internet: say so at once (every model would fail in milliseconds and the user would only see 'failed')
+  if (!net.isOnline()) throw new Error("You're offline. Connect to the internet and ask again. Timers, alarms, notes, your music, math and opening apps or files still work without it.");
   // The user's own key + model first. On failure the free chain below answers, and the user is told once.
   const own = ownActive();
   if (own) {
@@ -469,6 +489,7 @@ const aiHandler = async (e, messages, think, rec, opts = {}) => {
     }
   }
   // Speed mode: try the fast providers first (short prompts only: their free limits are small), then fall back to OpenRouter below.
+  if (aiCalls.getStore()?.signal.aborted) throw new Error('stopped');
   if (opts.fast || rec.promptChars < FAST_CAP) { // fast providers (Groq…) first for every call that fits; OpenRouter is the fallback
     const fast = await tryProviders(messages, think, rec, opts);
     if (fast != null) return fast;
@@ -489,6 +510,7 @@ const aiHandler = async (e, messages, think, rec, opts = {}) => {
     if (opts.fast && tries >= 2) break; // router calls: at most 2 OpenRouter attempts, the target is seconds not minutes
     let keyDead = false;
     for (const model of mOrder) {
+      if (aiCalls.getStore()?.signal.aborted) throw new Error('stopped'); // Stop: no next model, no next key
       if (keyDead) break;
       if (opts.fast && tries++ >= 2) break;
       say(`${model.split('/').pop().replace(/:free$/, '')} · key ${n}/${keys.length}`);
@@ -500,7 +522,7 @@ const aiHandler = async (e, messages, think, rec, opts = {}) => {
           headers: { Authorization: `Bearer ${k}`, 'Content-Type': 'application/json' },
           // No response_format: Nemotron Ultra doesn't support it; the renderer extracts the {...} from the reply instead.
           body: JSON.stringify({ model, messages, max_tokens: opts.maxTokens || (think ? 3000 : 1000), reasoning: { enabled: !!think } }),
-          signal: AbortSignal.timeout(opts.fast ? 8000 : think ? 30000 : 12000), // a busy free model fails fast; the next one is tried
+          signal: sig(opts.fast ? 8000 : think ? 30000 : 12000), // a busy free model fails fast; the next one is tried
         });
         data = await res.json().catch(() => ({}));
       } catch (err) { rec.attempts.push({ model, key: n, ms: Date.now() - at, r: err.name === 'TimeoutError' ? 'timeout' : 'error' }); lastErr = `${model}: ${err.name === 'TimeoutError' ? 'timed out' : err.message}`; transient = true; say('slow, switching model…'); continue; }
@@ -523,12 +545,80 @@ const aiHandler = async (e, messages, think, rec, opts = {}) => {
   const left = keys.filter((k) => restingUntil(k) < Date.now()).length;
   throw new Error(left ? `Every model is busy right now (${lastErr.slice(0, 80)}). Try again in a minute.` : `All ${keys.length} API keys hit their daily limit. They reset at 00:00 UTC, or add another key in Settings → keys.`);
 };
+// Stop: the window's model calls are cancelled at once (not left running in the background). Each call runs with its
+// window's AbortController; sig(ms) = that cancel OR the usual timeout.
+const aiCalls = new AsyncLocalStorage();
+const aiCtl = new Map(); // webContents id -> Set<AbortController>
+const sig = (ms) => { const c = aiCalls.getStore(); return c ? AbortSignal.any([AbortSignal.timeout(ms), c.signal]) : AbortSignal.timeout(ms); };
+ipcMain.on('aiCancel', (e) => { for (const c of aiCtl.get(e.sender.id) || []) c.abort(new Error('stopped')); aiCtl.delete(e.sender.id); });
 ipcMain.handle('ai', async (e, messages, think, opts) => {
+  const ctl = new AbortController();
+  if (!aiCtl.has(e.sender.id)) aiCtl.set(e.sender.id, new Set());
+  aiCtl.get(e.sender.id).add(ctl);
+  try { return await aiCalls.run(ctl, () => aiOne(e, messages, think, opts)); } finally { aiCtl.get(e.sender.id)?.delete(ctl); }
+});
+// Voice: audio from the renderer -> text. Groq Whisper (the fast-provider key), else the user's own OpenAI key.
+// The key never leaves main; the audio goes only to that provider and is not stored.
+const STT_HINT = 'Genisys, timer, reminder, alarm, stopwatch, shopping list, Kigali, weather';
+// Offline first (whisper.cpp in voice/whisper: nothing leaves the PC, works without internet); Groq / OpenAI when the user
+// picked online in Settings, or as the fallback when the offline one fails.
+let whisperLocal = null;
+const LOCAL_HINT = 'Genisys. Kigali, Rwanda.'; // short on purpose: a long word list pulled "tea" towards "Kigali" in tests
+ipcMain.handle('stt', async (e, buf, opts = {}) => {
+  const groq = providerList().find((p) => p.id === 'groq'), openai = ownKey('openai');
+  const ctl = new AbortController();
+  if (!aiCtl.has(e.sender.id)) aiCtl.set(e.sender.id, new Set());
+  aiCtl.get(e.sender.id).add(ctl);
+  whisperLocal ??= makeWhisper({ root: path.join(VOICE_DIR, 'whisper'), log: dlog });
+  if (opts.engine !== 'online' && whisperLocal.available() && (!opts.lang || opts.lang === 'auto' || opts.lang === 'en')) {
+    const t = Date.now();
+    try { const text = await whisperLocal.transcribe(buf, { seconds: Number(opts.seconds) || 0, prompt: LOCAL_HINT, signal: ctl.signal }); aiCtl.get(e.sender.id)?.delete(ctl); return { text, ms: Date.now() - t, engine: 'offline' }; }
+    catch (err) { if (err.stopped) { aiCtl.get(e.sender.id)?.delete(ctl); return { error: 'stopped' }; } dlog(`stt offline failed: ${err.message}`); }
+  }
+  if (!groq && !openai) { aiCtl.get(e.sender.id)?.delete(ctl); return { error: whisperLocal.available() ? 'failed' : 'nokey' }; }
+  const names = (() => { try { return db.catalogAll().sort((a, b) => (b.uses || 0) - (a.uses || 0)).slice(0, 25).map((r) => r.name); } catch { return []; } })();
+  const prompt = [STT_HINT, ...names].join(', ').slice(0, 600); // Whisper reads ~224 tokens of prompt
+  const post = async (url, key, model) => {
+    const f = new FormData();
+    f.append('file', new Blob([buf], { type: opts.type || 'audio/wav' }), /wav/.test(opts.type || 'audio/wav') ? 'speech.wav' : 'speech.webm');
+    f.append('model', model);
+    f.append('prompt', prompt);
+    f.append('response_format', 'json');
+    if (opts.lang && opts.lang !== 'auto') f.append('language', opts.lang);
+    const res = await fetch(url, { method: 'POST', headers: { Authorization: `Bearer ${key}` }, body: f, signal: AbortSignal.any([AbortSignal.timeout(30000), ctl.signal]) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw Object.assign(new Error(data?.error?.message || `HTTP ${res.status}`), { status: res.status });
+    return String(data.text ?? '');
+  };
+  const t = Date.now();
+  try {
+    const tries = [
+      ...(groq ? groq.keys.map((k) => () => post('https://api.groq.com/openai/v1/audio/transcriptions', k, 'whisper-large-v3-turbo')) : []),
+      ...(openai ? [() => post('https://api.openai.com/v1/audio/transcriptions', openai, 'gpt-4o-mini-transcribe')] : []),
+    ];
+    let last;
+    for (const go of tries) {
+      try { const text = await go(); dlog(`stt ${Date.now() - t}ms ${text.length} chars`); return { text, ms: Date.now() - t }; }
+      catch (err) { last = err; if (ctl.signal.aborted) return { error: 'stopped' }; }
+    }
+    const offline = last && !last.status;
+    return { error: offline ? 'offline' : 'failed', detail: String(last?.message || '').slice(0, 120) };
+  } finally { aiCtl.get(e.sender.id)?.delete(ctl); }
+});
+ipcMain.handle('openMicPrivacy', () => shell.openExternal('ms-settings:privacy-microphone'));
+// Offline voices (voice/ folder, shipped in the installer): spoken answers without the robotic Windows voices.
+const VOICE_DIR = app.isPackaged ? path.join(process.resourcesPath, 'voice') : path.join(__dirname, '../../voice');
+const tts = makeTts({ root: VOICE_DIR, log: dlog });
+app.on('will-quit', () => tts.stop()); // never leave piper.exe running after Genisys closes
+ipcMain.handle('tts', async (_e, text, opts) => { try { return await tts.speak(text, opts); } catch (err) { dlog(`tts failed: ${err.message}`); return { error: err.message }; } });
+ipcMain.handle('ttsVoices', () => tts.available().map((id) => ({ id, label: VOICES[id].label })));
+ipcMain.on('ttsWarm', (_e, voice, speed) => tts.warm(voice, speed));
+async function aiOne(e, messages, think, opts) {
   const rec = { provider: 'openrouter', think: !!think, promptChars: JSON.stringify(messages).length, attempts: [], model: null, usage: null, ms: 0, ok: false };
   const t = Date.now();
   try { const out = await aiHandler(e, messages, think, rec, opts || {}); rec.ok = true; rec.outChars = String(out).length; return out; }
   finally { rec.ms = Date.now() - t; rec.keySwitches = new Set(rec.attempts.map((a) => a.key)).size - 1; try { tp(e.sender.id).ai.push(rec); } catch {} }
-});
+}
 
 // Internet for agents: web search (DuckDuckGo lite, no key) and reading a page as plain text.
 const UA = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140 Safari/537.36' };
@@ -541,7 +631,7 @@ const cached = (key, make) => {
   if (hit && Date.now() - hit.t < 600000) return hit.p;
   const p = make();
   webCache.set(key, { t: Date.now(), p });
-  p.catch(() => webCache.delete(key));
+  p.then((r) => { if (r?.results && !r.results.length) webCache.delete(key); }, () => webCache.delete(key)); // never keep an empty search
   if (webCache.size > 40) webCache.delete(webCache.keys().next().value);
   return p;
 };
@@ -554,6 +644,17 @@ async function readPage(href, max = 3500, ms = 6000) {
   const text = unhtml(html.replace(/<(script|style|noscript|svg|head|nav|footer|header)[\s\S]*?<\/\1>/gi, ' '));
   return { status: res.status, url: res.url, title, text: text.slice(0, max) };
 }
+// An RSS search feed (Bing, Google News) -> [{ title, url, snippet }]. Descriptions are escaped HTML, hence unhtml twice.
+async function rss(url, n = 8) {
+  const xml = await (await fetch(url, { headers: UA, signal: AbortSignal.timeout(7000) })).text();
+  const tag = (s, t) => (s.match(new RegExp(`<${t}>(?:<!\\[CDATA\\[)?([\\s\\S]*?)(?:\\]\\]>)?</${t}>`)) || [])[1] || '';
+  return [...xml.matchAll(/<item>([\s\S]*?)<\/item>/g)].slice(0, n).map(([, it]) => {
+    const date = new Date(tag(it, 'pubDate')); // Google News items have one, Bing results do not
+    return { title: unhtml(unhtml(tag(it, 'title'))), url: unhtml(tag(it, 'link')), snippet: `${Number.isNaN(date.getTime()) ? '' : `${date.toDateString()}: `}${unhtml(unhtml(tag(it, 'description'))).slice(0, 300)}` };
+  }).filter((r) => /^https?:/.test(r.url) && r.title);
+}
+// Recent headlines (with their dates) for news-like questions: releases, prices, results. No key needed.
+const newsFor = (q) => rss(`https://news.google.com/rss/search?q=${encodeURIComponent(q)}&hl=en-US&gl=US&ceid=US:en`, 4).catch(() => []);
 async function ddg(q) {
   const parse = (html, lite) => {
     if (lite) {
@@ -567,8 +668,10 @@ async function ddg(q) {
   };
   const real = (r) => { const u = r.url.match(/uddg=([^&]+)/); return { ...r, url: u ? decodeURIComponent(u[1]) : r.url }; };
   const ask = async (url, lite) => parse(await (await fetch(url, { headers: UA, signal: AbortSignal.timeout(7000) })).text(), lite).map(real).filter((r) => /^https?:/.test(r.url));
-  // Both endpoints at once: the first one with results wins (no waiting for a slow one to fail first).
-  const tries = [ask(`https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(q)}`, true), ask(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}`, false)];
+  // All endpoints at once: the first one with results wins (no waiting for a slow one to fail first).
+  // DuckDuckGo now often answers scripts with a bot check (no results), so Bing's RSS feed is a third source.
+  const tries = [ask(`https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(q)}`, true), ask(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}`, false),
+    rss(`https://www.bing.com/search?q=${encodeURIComponent(q)}&format=rss`)];
   const settled = await Promise.race([
     Promise.any(tries.map((t) => t.then((r) => (r.length ? r : Promise.reject(new Error('empty')))))),
     new Promise((res) => setTimeout(() => res([]), 8000)),
@@ -577,19 +680,43 @@ async function ddg(q) {
 }
 ipcMain.handle('web', (_e, kind, q) => cached(`${kind}:${q}`, async () => {
   if (kind === 'search') {
-    const results = (await ddg(q)).filter((r, i, a) => a.findIndex((x) => new URL(x.url).hostname === new URL(r.url).hostname) === i).slice(0, 6);
+    const [web, news] = await Promise.all([ddg(q), newsFor(q)]);
+    // dated headlines first: for anything recent they are the answer (keyword results can be about something else: "GTA 6" -> GTA V pages)
+    const results = [...news.slice(0, 3), ...web.filter((r, i, a) => a.findIndex((x) => new URL(x.url).hostname === new URL(r.url).hostname) === i).slice(0, 6)];
     // Read the top 2 pages in parallel so the AI can answer straight away.
-    const pages = (await Promise.allSettled(results.slice(0, 2).map((r) => readPage(r.url, 2800, 5000)))).filter((p) => p.status === 'fulfilled' && p.value.text.length > 200).map((p) => p.value);
+    const pages = (await Promise.allSettled(results.filter((r) => !/^https:\/\/news\.google\./.test(r.url)).slice(0, 2).map((r) => readPage(r.url, 2800, 5000)))).filter((p) => p.status === 'fulfilled' && p.value.text.length > 200).map((p) => p.value);
     return { results, pages };
   }
   return readPage(q, 6000, 8000);
 }));
 
 // Agents write scripts/code here; refuses to overwrite unless force (renderer asks the user first).
-ipcMain.handle('write', (_e, file, content, force) => {
+// A real PDF: the text is laid out as HTML in a hidden window and printed by Chromium. Checked after writing.
+// The source text is kept beside our own data, so "add X to that pdf" can read what is already in it.
+const pdfSrc = (file) => path.join(app.getPath('userData'), 'pdf-src', `${createHash('sha1').update(path.resolve(file).toLowerCase()).digest('hex')}.txt`);
+async function printPdf(file, html, { overwrite = false, text } = {}) {
+  const win = new BrowserWindow({ show: false, webPreferences: { sandbox: true, javascript: false } });
+  try {
+    await win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+    const buf = await win.webContents.printToPDF({ pageSize: 'A4', printBackground: true });
+    if (buf.subarray(0, 5).toString('latin1') !== '%PDF-' || buf.length < 200) return { ok: false, error: 'bad output' };
+    fs.writeFileSync(file, buf, { flag: overwrite ? 'w' : 'wx' });
+    const back = fs.readFileSync(file);
+    const ok = back.length === buf.length && back.subarray(0, 5).toString('latin1') === '%PDF-';
+    if (ok && text != null) { try { fs.mkdirSync(path.dirname(pdfSrc(file)), { recursive: true }); fs.writeFileSync(pdfSrc(file), String(text)); } catch {} }
+    return { ok, size: back.length };
+  } catch (e) { return { ok: false, error: e.message }; } finally { if (!win.isDestroyed()) win.destroy(); }
+}
+ipcMain.handle('write', async (_e, file, content, force) => {
   const full = path.resolve(os.homedir(), file.replace(/%(\w+)%/g, (m, v) => process.env[v] ?? m));
   if (fs.existsSync(full) && !force) return { exists: true, full };
   fs.mkdirSync(path.dirname(full), { recursive: true });
+  if (/\.pdf$/i.test(full)) { // never plain text under a .pdf name
+    if (/^\s*(%PDF|<!doctype|<html)|\bendobj\b/i.test(content)) throw new Error('a .pdf needs the readable text only (# Title, - items); the app makes the PDF. Do not write PDF code or HTML');
+    const r = await printPdf(full, textToHtml(content, path.basename(full).replace(/\.pdf$/i, '')), { overwrite: true, text: content });
+    if (!r.ok) throw new Error(`the PDF was not written correctly${r.error ? `: ${r.error}` : ''}`);
+    return { full };
+  }
   fs.writeFileSync(full, content);
   return { full };
 });
@@ -698,6 +825,7 @@ ipcMain.handle('openFileDialog', async (e) => {
 ipcMain.handle('readText', (_e, file) => {
   const full = path.resolve(os.homedir(), String(file).replace(/%(\w+)%/g, (m, v) => process.env[v] ?? m));
   if (!fs.existsSync(full) || fs.statSync(full).size > 2e6) return null;
+  if (/\.pdf$/i.test(full)) { try { return fs.readFileSync(pdfSrc(full), 'utf8'); } catch { return null; } } // only PDFs Genisys made
   return fs.readFileSync(full, 'utf8');
 });
 
@@ -759,7 +887,14 @@ function runFile(file, temp, tm = {}) {
 }
 // A lone `powershell -Command "…"` from the AI: run it in the warm helper (no PowerShell startup). Anything else: a .bat.
 const PS_ONLY = /^\s*powershell(?:\.exe)?(?:\s+-(?:NoProfile|NoLogo|NonInteractive|ExecutionPolicy\s+\w+|WindowStyle\s+\w+))*\s+-(?:Command|c)\s+"((?:[^"]|"")*)"\s*$/i;
+// The main process asks for itself: a renderer (AI output shown as HTML) is never trusted to have confirmed.
+const confirmRun = async (e, message, detail) => (await dialog.showMessageBox(BrowserWindow.fromWebContents(e.sender), {
+  type: 'warning', buttons: ['Run', 'Cancel'], defaultId: 1, cancelId: 1, noLink: true, title: 'Genisys', message, detail: String(detail).slice(0, 1500),
+})).response === 0;
+const CANCELLED = { code: 1, out: 'cancelled by user' };
 ipcMain.handle('run', async (e, cmd) => {
+  cmd = String(cmd || '');
+  if (isRisky(cmd) && !(await confirmRun(e, 'Run this command? It changes things on your PC.', cmd))) return CANCELLED;
   const ps = PS_ONLY.exec(cmd);
   if (ps && !/[\r\n]/.test(cmd)) {
     try {
@@ -885,6 +1020,8 @@ ipcMain.handle('switchModel', () => { lastGood = { ...lastGood, model: lastGood.
 function resolveApp(name) {
   const want = normName(name);
   if (!want) return null;
+  const saved = db.prefAll()[`apppath:${want}`]; // found once by findAppDeep
+  if (saved) { if (fs.existsSync(saved)) return saved; db.prefDel(`apppath:${want}`); }
   const cands = [];
   const bad = /unins|uninstall|setup|update|crash|helper|repair|readme/i;
   const walk = (root, maxDepth, fn) => {
@@ -905,7 +1042,7 @@ function resolveApp(name) {
       if (!/\.lnk$/i.test(n) || bad.test(n)) return;
       const base = normName(n.replace(/\.lnk$/i, ''));
       if (!(base.includes(want) || (base.length > 3 && want.includes(base)))) return;
-      try { const t = shell.readShortcutLink(f).target; if (t && /\.exe$/i.test(t) && fs.existsSync(t)) cands.push({ p: t, s: base === want ? 3 : 2 }); } catch {}
+      try { const t = shortcutLaunch(f, shell.readShortcutLink(f), fs.existsSync); if (t) cands.push({ p: t, s: base === want ? 3 : 2 }); } catch {}
     });
   }
   if (!cands.length) { const s = storeApp(name); if (s) return s; } // Store app (WhatsApp, Netflix…): before the slow folder walk
@@ -946,10 +1083,80 @@ function browserProfiles(browser = 'chrome') {
     return Object.entries(cache).map(([dir, v]) => ({ dir, name: String(v.name || v.gaia_name || dir), email: String(v.user_name || '') }));
   } catch { return []; }
 }
+// ---- the catalog ("know my PC"): scanners feed src/fast/catalog.js; nothing here is a list of names ----
+let catalogBusy = false;
+async function refreshCatalog() {
+  if (catalogBusy) return; catalogBusy = true;
+  try {
+    const items = [], ran = new Set();
+    // Start-menu shortcuts, WITH their arguments (Chrome apps such as Spotify are shortcuts to chrome_proxy.exe --app-id=...)
+    try {
+      const pd = process.env.ProgramData || 'C:\\ProgramData';
+      const stack = [path.join(pd, 'Microsoft', 'Windows', 'Start Menu', 'Programs'), path.join(app.getPath('appData'), 'Microsoft', 'Windows', 'Start Menu', 'Programs')].map((r) => [r, 0]);
+      while (stack.length) {
+        const [dir, dep] = stack.pop();
+        let ents; try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
+        for (const e of ents) {
+          const f = path.join(dir, e.name);
+          if (e.isDirectory()) { if (dep < 3) stack.push([f, dep + 1]); continue; }
+          if (!/\.lnk$/i.test(e.name)) continue;
+          try { const it = classifyShortcut(e.name.replace(/\.lnk$/i, ''), f, shell.readShortcutLink(f), fs.existsSync); if (it) items.push(it); } catch {}
+        }
+      }
+      ran.add('startmenu');
+    } catch {}
+    if (storeApps.length) { items.push(...storeItems(storeApps)); ran.add('store'); }
+    try {
+      const r = await runPowerShell('$k = "HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*","HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*","HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*"; Get-ItemProperty $k -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName } | Select-Object DisplayName,Publisher,InstallLocation,DisplayIcon,SystemComponent,ParentKeyName | ConvertTo-Json -Compress', 25000);
+      const i = r.out.indexOf('['); const items2 = i >= 0 ? programItems(r.out.slice(i)) : [];
+      if (items2.length) { items.push(...items2); ran.add('registry'); }
+    } catch {}
+    for (const b of Object.keys(PROFILE_ROOTS)) {
+      const base = path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), ...PROFILE_ROOTS[b], 'User Data');
+      for (const pr of browserProfiles(b)) {
+        try { const bm = bookmarkItems(fs.readFileSync(path.join(base, pr.dir, 'Bookmarks'), 'utf8').replace(/^\uFEFF/, ''), b, pr.name); items.push(...bm); ran.add(`bookmarks:${b}:${pr.name}`); } catch {}
+      }
+    }
+    try { // recent files and folders: the shortcuts Windows keeps in Recent
+      const rd = path.join(app.getPath('appData'), 'Microsoft', 'Windows', 'Recent'); const rec = [];
+      for (const n of fs.readdirSync(rd).filter((x) => /\.lnk$/i.test(x)).slice(0, 400)) {
+        try { const t = shell.readShortcutLink(path.join(rd, n)).target; if (!t) continue; const st = fs.statSync(t); rec.push({ name: path.basename(t), target: t, isDir: st.isDirectory(), mtime: st.mtimeMs }); } catch {}
+      }
+      items.push(...recentItems(rec)); ran.add('recent');
+    } catch {}
+    const scanned = buildEntries(items);
+    const delta = mergeScan(db.catalogAll(), scanned, Date.now(), ran);
+    db.catalogApply(delta);
+    if (labelOn()) labelCatalog(50).catch(() => {});
+    dlog('catalog:', scanned.length, 'scanned,', delta.removes.length, 'removed; sources', [...ran].length);
+  } catch (e) { dlog('catalog failed:', e.message); } finally { catalogBusy = false; }
+}
+// ---- Stage 4: the model labels your apps (names only, opt-in with "label my pc"; cached by name hash) ----
+const askModel = (messages, opts = {}) => aiHandler({ sender: { send() {}, id: -1 } }, messages, false, { attempts: [], promptChars: JSON.stringify(messages).length }, { fast: true, ...opts });
+const labelOn = () => { try { return db.prefAll()['catalog:ai'] === 'on'; } catch { return false; } };
+let labelBusy = false;
+async function labelCatalog(limit = 50) {
+  if (labelBusy) return { done: 0, left: 0, busy: true }; labelBusy = true;
+  let done = 0, left = 0;
+  try {
+    const todo = db.catalogAll().filter(needsLabel);
+    left = todo.length;
+    for (let i = 0; i < Math.min(todo.length, limit); i += 25) {
+      const batch = todo.slice(i, i + 25);
+      let raw; try { raw = await askModel(labelMessages(batch), { maxTokens: 1500, timeoutMs: 20000 }); } catch (e) { dlog('label ask failed:', e.message); break; }
+      for (const [id, lab] of parseLabels(raw, batch)) { const en = batch.find((b) => b.id === id); db.catalogLabel(id, lab, nameHash(en)); done++; }
+    }
+    left = db.catalogAll().filter(needsLabel).length;
+    dlog('catalog labels:', done, 'new,', left, 'still unlabeled');
+  } catch (e) { dlog('label failed:', e.message); } finally { labelBusy = false; }
+  return { done, left };
+}
 function launchTarget(target, args = []) {
   const c = isStoreTarget(target)
     ? spawn('explorer.exe', [target], { detached: true, stdio: 'ignore' })
-    : spawn(target, args, { detached: true, stdio: 'ignore', cwd: path.dirname(target) });
+    : isShortcut(target) // a shortcut with arguments (Chrome apps such as Spotify): let Windows start it, so its arguments are kept
+      ? spawn('cmd.exe', ['/d', '/c', 'start', '', target, ...args], { detached: true, stdio: 'ignore', windowsHide: true })
+      : spawn(target, args, { detached: true, stdio: 'ignore', cwd: path.dirname(target) });
   c.on('error', () => {});
   c.unref();
 }
@@ -962,11 +1169,14 @@ ipcMain.handle('launchApp', (_e, name, file) => {
   } catch (e) { return { ok: false, error: e.message }; }
 });
 // Rerun a saved task's .bat directly (no AI).
-ipcMain.handle('runBat', (_e, id) => {
+ipcMain.handle('runBat', async (e, id) => {
   syncBats();
   const m = db.listMemory().find((r) => r.id === id);
   if (!m) return { code: 1, out: 'saved .bat not found' };
-  return runFile(path.join(batsDir(), batName(m)), false);
+  const file = path.join(batsDir(), batName(m));
+  let text = ''; try { text = fs.readFileSync(file, 'utf8'); } catch {}
+  if (isRisky(text) && !(await confirmRun(e, 'Run this saved task? It changes things on your PC.', text))) return CANCELLED;
+  return runFile(file, false);
 });
 
 // ======================= Stages 3-9: the fast path (native actions, registry, path index, providers, scripts) =======================
@@ -996,7 +1206,7 @@ function scanApps() {
       const f = path.join(d, e.name);
       if (e.isDirectory()) { if (dep < 3) stack.push([f, dep + 1]); continue; }
       if (!/\.lnk$/i.test(e.name) || bad.test(e.name)) continue;
-      try { const t = shell.readShortcutLink(f).target; if (t && /\.exe$/i.test(t) && fs.existsSync(t)) out.set(t.toLowerCase(), { name: e.name.replace(/\.lnk$/i, ''), path: t }); } catch {}
+      try { const t = shortcutLaunch(f, shell.readShortcutLink(f), fs.existsSync); if (t) out.set(t.toLowerCase(), { name: e.name.replace(/\.lnk$/i, ''), path: t }); } catch {}
     }
   }
   return [...out.values()];
@@ -1158,6 +1368,260 @@ function runPowerShell(script, ms = 30000) {
   });
 }
 
+// A playlist in the player this PC really uses for that kind of song. A .m3u often has no working default on Windows
+// (it shows "Pick an application"), so: the song type's own player with the playlist, else Windows Media Player, else the first song.
+async function openPlaylist(m3u, firstSong) {
+  const ext = path.extname(firstSong || '.mp3') || '.mp3';
+  const r = await psRead(`Add-Type -Namespace A -Name Q -MemberDefinition '[DllImport("shlwapi.dll",CharSet=CharSet.Unicode)] public static extern uint AssocQueryString(int f,int s,string a,string e,System.Text.StringBuilder o,ref uint n);'; $sb=New-Object Text.StringBuilder 1024; $n=[uint32]1024; [void][A.Q]::AssocQueryString(0,2,'${ext.replace(/[^.\w]/g, '')}',$null,$sb,[ref]$n); $sb.ToString()`, 8000).catch(() => '');
+  const exe = String(r || '').trim();
+  const ok = (p) => p && /\.exe$/i.test(p) && !/openwith|windowsapps/i.test(p) && fs.existsSync(p);
+  const wmp = [process.env.ProgramFiles, process.env['ProgramFiles(x86)']].filter(Boolean).map((d) => path.join(d, 'Windows Media Player', 'wmplayer.exe')).find((p) => fs.existsSync(p));
+  const use = ok(exe) ? exe : wmp;
+  if (use) { launchTarget(use, [m3u]); return ''; }
+  return shell.openPath(firstSong);
+}
+
+// The in-app music player's songs: a tiny HTTP server on 127.0.0.1 only, with a random secret in every link, that
+// serves audio files from the allowed folders with byte ranges (the audio element seeks; m4a keeps its index at the end).
+const MEDIA_MIME = { mp3: 'audio/mpeg', m4a: 'audio/mp4', aac: 'audio/aac', wav: 'audio/wav', flac: 'audio/flac', ogg: 'audio/ogg', oga: 'audio/ogg', opus: 'audio/ogg', wma: 'audio/x-ms-wma', webm: 'audio/webm' };
+const media = { port: 0, key: createHash('sha256').update(`${Math.random()}${Date.now()}${process.pid}`).digest('hex').slice(0, 32) };
+const mediaUrl = (p) => (media.port ? `http://127.0.0.1:${media.port}/${media.key}/song?p=${encodeURIComponent(p)}` : '');
+function startMediaServer() {
+  const srv = http.createServer((req, res) => {
+    try {
+      const u = new URL(req.url, 'http://127.0.0.1');
+      const p = u.searchParams.get('p') || '', ext = path.extname(p).slice(1).toLowerCase();
+      if (!u.pathname.startsWith(`/${media.key}/`) || !MEDIA_MIME[ext] || !isInside(p, allowedFolders()) || !fs.existsSync(p)) { res.writeHead(404); res.end(); return; }
+      const size = fs.statSync(p).size;
+      const m = /bytes=(\d*)-(\d*)/.exec(req.headers.range || '');
+      const start = m && m[1] ? Number(m[1]) : 0, end = m && m[2] ? Math.min(Number(m[2]), size - 1) : size - 1;
+      if (start >= size) { res.writeHead(416, { 'Content-Range': `bytes */${size}` }); res.end(); return; }
+      res.writeHead(m ? 206 : 200, { 'Content-Type': MEDIA_MIME[ext], 'Accept-Ranges': 'bytes', 'Content-Length': end - start + 1, ...(m ? { 'Content-Range': `bytes ${start}-${end}/${size}` } : {}), 'Cache-Control': 'no-store' });
+      fs.createReadStream(p, { start, end }).on('error', () => res.destroy()).pipe(res);
+    } catch { try { res.writeHead(500); res.end(); } catch {} }
+  });
+  srv.on('error', (e) => dlog('media server failed', e.message));
+  srv.listen(0, '127.0.0.1', () => { media.port = srv.address().port; dlog('media server on', media.port); });
+}
+
+// Media control of an app that is ALREADY open (any player): Windows' media sessions tell the real state (paused /
+// playing), so "play" only ever plays and never toggles a playing film off. Players without a session: their window is
+// brought forward and the media key is pressed (said honestly). Returns { running, via, before, after, title }.
+const MEDIA_APPS = { potplayer: ['PotPlayer', 'PotPlayer'], vlc: ['vlc', 'vlc'], spotify: ['Spotify', 'Spotify'], aimp: ['AIMP', 'AIMP'],
+  browser: ['chrome|msedge|firefox|brave|opera', 'chrome|msedge|firefox|brave|opera'], 'media player': ['ZuneMusic|ZuneVideo|Media', 'Microsoft.Media.Player|wmplayer'], netflix: ['Netflix', 'Netflix|WWAHost'] };
+async function mediaControl(app, op) {
+  const [sess, proc] = MEDIA_APPS[app] || ['', ''];
+  const arg = Buffer.from(JSON.stringify({ sess, proc, op: String(op) }), 'utf8').toString('base64');
+  const script = [
+    "$a = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('" + arg + "')) | ConvertFrom-Json",
+    "$out = @{ running = $false; via = 'none' }",
+    'try {',
+    '  Add-Type -AssemblyName System.Runtime.WindowsRuntime',
+    "  $asTask = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' })[0]",
+    '  function Await($o, $t) { $k = $asTask.MakeGenericMethod($t).Invoke($null, @($o)); [void]$k.Wait(4000); $k.Result }',
+    '  [void][Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager, Windows.Media.Control, ContentType = WindowsRuntime]',
+    '  $mgr = Await ([Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager]::RequestAsync()) ([Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager])',
+    "  $s = if ($a.sess) { $mgr.GetSessions() | Where-Object { $_.SourceAppUserModelId -match $a.sess } | Select-Object -First 1 } else { $mgr.GetCurrentSession() }",
+    '  if ($s) {',
+    "    $out.running = $true; $out.via = 'session'; $out.app = $s.SourceAppUserModelId",
+    '    $out.before = [string]$s.GetPlaybackInfo().PlaybackStatus',
+    "    switch ($a.op) { 'play' { if ($out.before -ne 'Playing') { [void](Await ($s.TryPlayAsync()) ([bool])) } } 'pause' { if ($out.before -eq 'Playing') { [void](Await ($s.TryPauseAsync()) ([bool])) } } 'toggle' { [void](Await ($s.TryTogglePlayPauseAsync()) ([bool])) } 'next' { [void](Await ($s.TrySkipNextAsync()) ([bool])) } 'prev' { [void](Await ($s.TrySkipPreviousAsync()) ([bool])) } }",
+    '    Start-Sleep -Milliseconds 500',
+    '    $out.after = [string]$s.GetPlaybackInfo().PlaybackStatus',
+    '    try { $p = Await ($s.TryGetMediaPropertiesAsync()) ([Windows.Media.Control.GlobalSystemMediaTransportControlsSessionMediaProperties]); $out.title = $p.Title } catch {}',
+    '  }',
+    '} catch {}',
+    "if ($out.via -eq 'none' -and $a.proc) {",
+    "  $w = Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and $_.ProcessName -match $a.proc } | Select-Object -First 1",
+    '  if ($w) {',
+    "    $out.running = $true; $out.via = 'keys'; $out.title = $w.MainWindowTitle",
+    '    [void](New-Object -ComObject WScript.Shell).AppActivate($w.Id); Start-Sleep -Milliseconds 300',
+    "    Add-Type -Namespace K -Name B -MemberDefinition '[DllImport(\"user32.dll\")] public static extern void keybd_event(byte k, byte s, uint f, System.UIntPtr e);'",
+    "    $vk = switch ($a.op) { 'next' { 0xB0 } 'prev' { 0xB1 } default { 0xB3 } }",
+    '    [K.B]::keybd_event($vk, 0, 0, [UIntPtr]::Zero); [K.B]::keybd_event($vk, 0, 2, [UIntPtr]::Zero)',
+    '  }',
+    '}',
+    '$out | ConvertTo-Json -Compress',
+  ].join('\n');
+  const r = await runPowerShell(script, 15000);
+  try { return JSON.parse(String(r.out).trim().split('\n').pop()); } catch { return { running: false, via: 'error', error: String(r.out).slice(0, 200) }; }
+}
+
+// ---- Learning about the user (Settings › "Learn about me", on by default). After every few messages, the model reads
+// the latest ones and keeps the lasting things (who they are, likes, people, places, routines); once, a catch-up pass
+// reads the requests of the past weeks. Everything lands in "About you", where the user sees and deletes it.
+const learningOn = () => { try { return (db.getSetting('prefs', {}) || {}).learning !== false; } catch { return true; } };
+let learnBusy = false, learnCount = 0;
+async function learnFrom(texts) {
+  if (learnBusy || !learningOn() || !net.isOnline() || !texts.length) return 0;
+  learnBusy = true;
+  try {
+    const known = db.listProfile();
+    const raw = await askModel(learnMessages(known, texts), { maxTokens: 700, timeoutMs: 25000 });
+    const add = parseLearned(raw, known);
+    for (const m of add) db.addProfile(m.kind, m.text);
+    if (add.length) dlog('learned', add.map((m) => m.text).join(' | '));
+    return add.length;
+  } catch (e) { dlog('learn failed', e.message); return 0; } finally { learnBusy = false; }
+}
+ipcMain.on('learnTick', () => { if (++learnCount % 5 === 0) learnFrom(db.recentTasks(30)).catch(() => {}); });
+// one catch-up over everything asked so far (the timing log keeps every request), in a few small passes
+async function learnCatchUp() {
+  if (db.getSetting('learnCatchUp', 0) >= 1 || !learningOn()) return;
+  let texts = [];
+  try { texts = fs.readFileSync(timingFile(), 'utf8').trim().split('\n').map((l) => { try { return JSON.parse(l).text; } catch { return ''; } }); } catch {}
+  texts = [...new Set([...texts, ...db.recentTasks(200)].map((t) => String(t || '').trim()).filter((t) => t.length > 8))].slice(-320);
+  for (let i = 0; i < texts.length; i += 80) { await learnFrom(texts.slice(i, i + 80)); await new Promise((r) => setTimeout(r, 4000)); }
+  db.setSetting('learnCatchUp', 1);
+}
+// habits, counted from what the user does (no AI): for the AI's prompt
+ipcMain.handle('habits', () => { try { return habitLines({ ...db.habitRows(), alarms: clockStore.list().filter((r) => r.kind === 'alarm').map((r) => r.at) }); } catch { return []; } });
+
+// Reminders: a Windows notification at the time. Saved in prefs, so a restart before the time still fires them.
+const remTimers = new Map();
+const remList = () => { try { return JSON.parse(db.prefAll().reminders || '[]'); } catch { return []; } };
+// every change reaches every window, so all timer cards (chat, floating card) show the same state
+const remSave = (l) => { db.prefSet('reminders', JSON.stringify(l)); setTimeout(() => { for (const w of BrowserWindow.getAllWindows()) try { w.webContents.send('clock-changed'); } catch {} }, 0); };
+// Timers and alarms ring INSIDE Genisys: the main window comes forward with a ringing card and its own sound
+// (the renderer makes it, see toolcards.js ringCard). The Windows notification is only the backup when the window is hidden.
+const userInApp = () => !!mainWin && !mainWin.isDestroyed() && mainWin.isVisible() && !mainWin.isMinimized() && mainWin.isFocused();
+const ring = (r) => {
+  const msg = { kind: r.kind || 'reminder', text: r.text, at: r.at };
+  if (userInApp()) mainWin.webContents.send('clock-ring', msg);
+  else showTool({ ring: msg }); // away from Genisys: it rings in the small card at the bottom-right
+};
+
+// Floating tool card (bottom-right of the screen, always on top, never takes focus): the live tool (timer, stopwatch,
+// music) while the user is in another app, and timers / alarms that go off. Hidden again when they come back.
+let toolWin = null, toolActive = null, toolPinned = false, toolPending = null;
+function showTool(msg) {
+  const wa = screen.getPrimaryDisplay().workArea;
+  const w = 300, h = toolWin ? toolWin.getBounds().height : 220;
+  const bounds = { x: wa.x + wa.width - w - 12, y: wa.y + wa.height - h - 12, width: w, height: h };
+  if (!toolWin) {
+    toolPending = msg;
+    toolWin = new BrowserWindow({ ...bounds, frame: false, transparent: true, hasShadow: false, thickFrame: false, roundedCorners: false, resizable: false, alwaysOnTop: true, skipTaskbar: true, focusable: true, show: false,
+      icon: path.join(ASSETS, 'icon.png'), webPreferences: { preload: path.join(__dirname, 'preload.js'), backgroundThrottling: false } });
+    toolWin.setAlwaysOnTop(true, 'floating');
+    const query = { mode: 'tool' };
+    if (MAIN_WINDOW_VITE_DEV_SERVER_URL) toolWin.loadURL(`${MAIN_WINDOW_VITE_DEV_SERVER_URL}?${new URLSearchParams(query)}`);
+    else toolWin.loadFile(path.join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`), { query });
+    toolWin.on('closed', () => { toolWin = null; });
+    return;
+  }
+  toolWin.webContents.send('tool-show', msg);
+  if (!toolWin.isVisible()) toolWin.showInactive();
+}
+function hideTool() { toolPinned = false; if (toolWin && !toolWin.isDestroyed()) { toolWin.webContents.send('tool-stop'); toolWin.hide(); } }
+ipcMain.on('toolReady', () => { if (toolWin && toolPending) { toolWin.webContents.send('tool-show', toolPending); toolPending = null; toolWin.showInactive(); } });
+ipcMain.on('toolSize', (_e, h) => {
+  if (!toolWin || !Number.isFinite(h)) return;
+  const wa = screen.getPrimaryDisplay().workArea, b = toolWin.getBounds();
+  const height = Math.max(120, Math.min(Math.round(h), wa.height - 40));
+  if (height !== b.height) toolWin.setBounds({ ...b, y: wa.y + wa.height - height - 12, height });
+});
+// the main window says what is live; while the user is away the floating card follows it (new song, timer gone…)
+ipcMain.on('toolActive', (_e, data) => {
+  toolActive = data || null;
+  if (toolWin?.isVisible() && !toolWin.webContents.isLoading()) { if (toolActive) toolWin.webContents.send('tool-show', { card: toolActive }); else if (!toolPinned) hideTool(); }
+});
+ipcMain.on('toolFloat', (_e, data) => { if (data) { toolPinned = true; showTool({ card: data }); } }); // "pop out" from a card in the chat
+// closed by the user: it stays closed (the same timer does not come back on the next minimize)
+ipcMain.on('toolHide', () => { toolActive = null; hideTool(); });
+// is the remembered live tool still live? (bug: a cancelled / finished timer came back as a dead, "stuck" card)
+const toolStillLive = (a) => {
+  if (!a) return false;
+  if (a.type === 'timer') return clockStore.list().some((r) => r.kind === 'timer' && r.paused == null && (a.id ? r.id === a.id : true) && r.at > Date.now());
+  if (a.type === 'stopwatch') return stopwatch.status().running;
+  return true; // music: the main window says when it stops
+};
+ipcMain.on('toolOpenApp', () => { hideTool(); if (mainWin && !mainWin.isDestroyed()) { if (mainWin.isMinimized()) mainWin.restore(); mainWin.show(); mainWin.focus(); } });
+ipcMain.on('toolCmd', (_e, cmd) => { if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send('tool-cmd', String(cmd)); });
+const TITLE = { reminder: 'Genisys reminder', timer: "Time's up", alarm: 'Alarm' };
+function remArm(r) {
+  if (remTimers.has(r.id) || r.paused != null) return; // a paused timer waits for resume
+  remTimers.set(r.id, setTimeout(() => {
+    remTimers.delete(r.id);
+    // only reminders use a Windows notification; timers and alarms ring in Genisys itself (chat or floating card)
+    if (r.kind !== 'timer' && r.kind !== 'alarm') { try { new Notification({ title: TITLE.reminder, body: r.text }).show(); } catch {} }
+    ring(r);
+    clockStore.done(r.id);
+    try { db.toolLog(r.kind === 'reminder' || !r.kind ? 'remind' : r.kind, r.text, 'rang', true); } catch {}
+  }, Math.max(0, Math.min(r.at - Date.now(), 2 ** 31 - 1))));
+}
+// add / cancel / pause / resume / missed-at-start: the tested store (clockstore.js) over the saved list and the timeouts above
+const clockStore = makeClockStore({ load: remList, save: remSave, arm: remArm, disarm: (id) => { clearTimeout(remTimers.get(id)); remTimers.delete(id); } });
+const addReminder = (...a) => clockStore.add(...a);
+// One stopwatch, kept in memory (like the phone's).
+const sw = { start: 0, acc: 0 };
+const swNow = () => sw.acc + (sw.start ? Date.now() - sw.start : 0);
+const stopwatch = {
+  start: () => { const was = !!sw.start; if (!sw.start) sw.start = Date.now(); return { was, ms: swNow() }; },
+  stop: () => { const ran = !!sw.start; sw.acc = swNow(); sw.start = 0; return { ran, ms: sw.acc }; },
+  status: () => ({ running: !!sw.start, ms: swNow() }),
+  reset: () => { sw.start = 0; sw.acc = 0; return { ms: 0 }; },
+};
+// Notes: one plain text file in Documents, so the user can open it in any editor too.
+const notes = { add: (t, l) => db.memoAdd(t, l), list: (l) => db.memoList(l), done: (id, v) => db.memoDone(id, v), del: (id) => db.memoDel(id) }; // in Genisys's own database
+// At start: the future ones are armed. A timer or alarm that was due while Genisys was closed does not ring late (a phone
+// doesn't either): it is logged as missed and one quiet note says so. A missed reminder is still shown, it is a to-do.
+const armReminders = () => {
+  const late = clockStore.startup();
+  for (const r of late) try { db.toolLog(r.kind, r.text, `missed (was due ${new Date(r.at).toLocaleString()}, Genisys was closed)`, false); } catch {}
+  if (late.length) try { new Notification({ title: 'Genisys', body: `Missed while Genisys was closed: ${late.map((r) => r.label || r.text).join(', ')}` }).show(); } catch {}
+};
+
+// chat_send: focus the chat app, search the contact, open the top match, paste the file (or type the text).
+// Values travel as base64 JSON, never inside the script text. It never presses the final Enter: the user sends.
+async function chatSend(o) {
+  const b64 = Buffer.from(JSON.stringify(o), 'utf8').toString('base64');
+  const r = await runPowerShell(`
+$a = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${b64}')) | ConvertFrom-Json
+Add-Type -AssemblyName System.Windows.Forms
+$ws = New-Object -ComObject WScript.Shell
+function Keys($s) { [System.Windows.Forms.SendKeys]::SendWait($s) }
+function Lit($s) { ($s -replace '([+^%~(){}\\[\\]])', '{$1}') }
+$ok = $false
+for ($i = 0; $i -lt 16 -and -not $ok; $i++) { Start-Sleep -Milliseconds 500; $ok = $ws.AppActivate($a.title) }
+if (-not $ok) { Write-Output 'NOWINDOW'; exit 2 }
+Start-Sleep -Milliseconds 800
+if ($a.path) { Set-Clipboard -Path $a.path }
+Keys $a.search; Start-Sleep -Milliseconds 500
+Keys (Lit $a.to); Start-Sleep -Milliseconds 1500
+Keys '{ENTER}'; Start-Sleep -Milliseconds 1200
+if ($a.path) { Keys '^v' } else { Keys (Lit $a.text) }
+Write-Output 'OK'`, 30000);
+  return /\bOK\b/.test(r.out) ? { ok: true } : { ok: false, error: /NOWINDOW/.test(r.out) ? 'its window did not come up' : 'the keys could not be sent' };
+}
+
+// An app the quick lookups miss (installed deep in a folder, odd name): search harder once, then remember where it is.
+const appPathKey = (name) => `apppath:${normName(String(name || ''))}`;
+async function findAppDeep(name) {
+  const want = normName(String(name || ''));
+  if (want.length < 3) return null;
+  const b64 = Buffer.from(JSON.stringify({ want: String(name).trim() }), 'utf8').toString('base64');
+  const r = await runPowerShell(`
+$w = ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${b64}')) | ConvertFrom-Json).want
+$n = ($w -replace '[^A-Za-z0-9]', '')
+$hit = Get-ChildItem 'HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\App Paths','HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\App Paths' -ErrorAction SilentlyContinue | Where-Object { ($_.PSChildName -replace '[^A-Za-z0-9]', '') -like "*$n*" } | ForEach-Object { (Get-ItemProperty $_.PSPath).'(default)' } | Select-Object -First 1
+if (-not $hit) { $c = Get-Command "$n.exe" -ErrorAction SilentlyContinue | Select-Object -First 1; if ($c) { $hit = $c.Source } }
+if (-not $hit) {
+  $roots = @($env:ProgramFiles, \${env:ProgramFiles(x86)}, $env:LOCALAPPDATA, $env:APPDATA) + (Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Root -ne "$env:SystemDrive\\" -and $_.Free -ne $null } | ForEach-Object { $_.Root })
+  $t0 = Get-Date
+  foreach ($r in $roots | Where-Object { $_ -and (Test-Path $_) }) {
+    if (((Get-Date) - $t0).TotalSeconds -gt 18) { break }
+    $f = Get-ChildItem $r -Recurse -Depth 6 -Filter "*$n*.exe" -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -notmatch 'unins|setup|update|crash|helper' } | Sort-Object { $_.Name.Length } | Select-Object -First 1
+    if ($f) { $hit = $f.FullName; break }
+  }
+}
+if ($hit) { Write-Output ("FOUND:" + ($hit -replace '"', '')) }`, 25000);
+  const m = /FOUND:(.+)/.exec(r.out || '');
+  const p = m && m[1].trim();
+  if (!p || !fs.existsSync(p)) return null;
+  db.prefSet(appPathKey(name), p);
+  return p;
+}
+
 // ---- the action registry (Stage 7): actions/<name>/ folders, loaded once
 const ACTIONS_DIR = app.isPackaged ? path.join(process.resourcesPath, 'actions') : path.join(__dirname, '../../actions');
 let fastState;
@@ -1178,13 +1642,49 @@ function getFast() {
     scanFiles: (root) => scanFiles(root, fs.promises),
     refreshIndex: () => refreshIndexSoon(),
     browserProfiles: (b) => browserProfiles(b),
+    writePdf: (file, html, text) => printPdf(file, html, { text }),
+    chatSend,
+    findAppDeep,
+    remind: addReminder,
+    clock: clockStore,
+    stopwatch,
+    notes,
+    openPlaylist,
+    mediaControl,
+    weather: async (place) => (await fetch(`https://wttr.in/${encodeURIComponent(String(place || '').slice(0, 60))}?format=j1`, { headers: { 'User-Agent': 'curl/8', Accept: 'application/json' }, signal: AbortSignal.timeout(7000) })).json(),
+    mediaUrl,
+    tempDir: os.tmpdir(),
+    prefs: () => db.prefAll(),
+    prefSet: (k, v) => db.prefSet(k, v),
+    prefDel: (k) => db.prefDel(k),
+    prefBump: (k) => db.prefBump(k),
+    catalog: () => db.catalogAll(),
+    catalogRefresh: () => refreshCatalog(),
+    learned: () => { try { return db.learnAll(); } catch { return {}; } },
+    learn: (q, id, dw, dl) => { try { db.learnBump(q, id, dw, dl); } catch {} },
+    confuse: (c) => { try { db.confusionAdd(c); } catch {} },
+    confusions: (n) => { try { return db.confusionRecent(n); } catch { return []; } },
+    labelOn,
+    labelRun: async () => { db.prefSet('catalog:ai', 'on'); if (!db.catalogAll().length) await refreshCatalog(); return labelCatalog(200); },
+    labelOff: () => db.prefSet('catalog:ai', 'off'),
+    ask: (messages, opts) => askModel(messages, opts),
+    catalogTouch: (text) => { // an opened thing gets +1 use: found by its normalized name or alias
+      try { const q = catKey(text); if (!q) return; const e = db.catalogAll().find((x) => x.key === q || (x.aliases || []).includes(q)); if (e) db.catalogUse(e.id); } catch {}
+    },
     hashOf: (f) => hashSample(f, fs.promises, createHash),
     sysQuery: (script) => psRead(script),
+    // every process whose exe name contains `name` -> { count, mb } (working set, like Task Manager's "memory")
+    procMem: (name) => new Promise((resolve) => execFile('tasklist', ['/FO', 'CSV', '/NH'], { windowsHide: true, timeout: 8000 }, (e, out) => {
+      if (e) return resolve(null);
+      let count = 0, kb = 0;
+      for (const l of String(out).split(/\r?\n/)) { const c = l.split('","'); if (c.length < 5 || !c[0].replace(/^"/, '').toLowerCase().includes(name)) continue; count++; kb += Number(c[4].replace(/[^\d]/g, '')) || 0; }
+      resolve({ count, mb: Math.round(kb / 1024) });
+    })),
     totalRam: os.totalmem(),
     isAllowed: (p) => isInside(p, allowedFolders()),
     mkdirp: (p) => fs.mkdirSync(p, { recursive: true }),
     writeFile: (p, c) => fs.writeFileSync(p, c),
-    readFile: (p) => fs.readFileSync(p, 'utf8'),
+    readFile: (p) => (/\.pdf$/i.test(p) ? (() => { try { return fs.readFileSync(pdfSrc(p), 'utf8'); } catch { return '(a PDF made outside Genisys: its text cannot be read)'; } })() : fs.readFileSync(p, 'utf8')),
     listDir: (p) => fs.readdirSync(p, { withFileTypes: true }).map((e) => (e.isDirectory() ? `${e.name}\\` : e.name)),
     statPath: (p) => { // size of one file, or of a whole folder (capped so a huge drive cannot hang the app)
       try {
@@ -1216,6 +1716,7 @@ async function runTemplate(spec, params, confirmed) {
 }
 const boolsToText = (o) => Object.fromEntries(Object.entries(o || {}).map(([k, v]) => [k, typeof v === 'boolean' ? String(v) : v]));
 // One entry point for every action: params are validated HERE (the page is not trusted), destructive ones need confirmed=true.
+const LOGGED_TOOLS = new Set(['weather', 'timer', 'alarm', 'remind', 'stopwatch', 'note', 'quick', 'world_time', 'play_music', 'chat_send']);
 ipcMain.handle('fast', async (_e, action, params, confirmed) => {
   const t = Date.now();
   try {
@@ -1225,6 +1726,10 @@ ipcMain.handle('fast', async (_e, action, params, confirmed) => {
     const v = validateParams(spec, boolsToText(params), { isAllowed: (p) => isInside(p, allowedFolders()) });
     if (!v.ok) return { status: 'fall', reason: v.error };
     const r = spec.template ? await runTemplate(spec, v.params, !!confirmed) : await A[spec.native](v.params, !!confirmed);
+    if (LOGGED_TOOLS.has(action) && r.status !== 'fall' && v.params.op !== 'status') { // the Tools page: what each tool did, and when
+      const req = Object.entries(v.params).filter(([k, x]) => x !== '' && x != null && !/^(id|total)$/.test(k)).map(([k, x]) => (k === 'at' ? `at ${new Date(Number(x)).toLocaleString()}` : `${k} ${x}`)).join(', ');
+      try { db.toolLog(action, req, r.message || r.status, r.status === 'done'); } catch {}
+    }
     return { ...r, ms: Date.now() - t };
   } catch (e) { return { status: 'fall', reason: e.message, ms: Date.now() - t }; }
 });
@@ -1247,11 +1752,11 @@ ipcMain.handle('fastSpecs', () => {
 // ---- AI-written scripts (Stage 9): checked again here, always confirmed, always logged
 const scriptCheckNow = (script) => checkScript(script, { allowed: allowedFolders(), launchRoots: launchRoots(), exists: fs.existsSync, env: scriptEnv() });
 ipcMain.handle('scriptCheck', (_e, script) => scriptCheckNow(String(script || '')));
-ipcMain.handle('scriptRun', async (_e, script, confirmed, command) => {
+ipcMain.handle('scriptRun', async (e, script, _confirmed, command) => {
   script = String(script || '');
   const check = scriptCheckNow(script);
   if (check.level === 'block') return { status: 'blocked', check };
-  if (!confirmed) return { status: 'confirm', check };
+  if (!(await confirmRun(e, 'Genisys needs to run a small program on your PC to do this. Go ahead?', `${check.reasons?.length ? `${check.reasons.join('; ')}\n\n` : ''}${script}`))) return { status: 'refused', check };
   const r = await runPowerShell(script, 30000);
   try { db.scriptRecord(hashScript(script), String(command || '').slice(0, 300), script, r.code === 0); } catch {}
   return { status: r.code === 0 ? 'done' : 'failed', code: r.code, out: r.out, ms: r.ms, check };
@@ -1280,7 +1785,7 @@ const wins = new Map();
 const pushAgents = () => mainWin?.webContents.send('agents', [...agents.values()]);
 
 // Small "hacker film" windows that tile across the screen; a closed window frees its slot for the next one.
-const SIZES = { main: [1100, 760], agent: [614, 326], script: [1040, 900] /* taller than the others: room for code */, runner: [740, 96] };
+const SIZES = { main: [1100, 760], agent: [614, 326], script: [1040, 900] /* taller than the others: room for code */, runner: [740, 78] };
 const usedSlots = new Set();
 function placeTile(w, h) {
   const wa = screen.getPrimaryDisplay().workArea;
@@ -1331,17 +1836,22 @@ const createWindow = (query, pos = {}) => {
   return win;
 };
 
-// Alt+Space runner: a small glass bar, bottom center, 100px above the taskbar. Exists only while shown (0 RAM idle).
-let runnerWin = null;
-function toggleRunner() {
-  if (runnerWin) { runnerWin.close(); return; }
+// Alt+Space runner: a small glass bar, bottom center, 100px above the taskbar. Kept loaded and hidden, so the hotkey only
+// shows it (instant). Each hide reloads the page in the background: the next Alt+Space is a fresh, empty bar again.
+let runnerWin = null, runnerShown = false, runnerReady = false;
+const runnerBounds = () => {
   const wa = screen.getPrimaryDisplay().workArea;
   const [w, h] = SIZES.runner;
+  return { width: w, height: h, x: Math.round(wa.x + (wa.width - w) / 2), y: wa.y + wa.height - 100 - h };
+};
+function makeRunner() {
+  if (runnerWin) return;
+  runnerReady = false;
   runnerWin = new BrowserWindow({
-    width: w, height: h, x: Math.round(wa.x + (wa.width - w) / 2), y: wa.y + wa.height - 100 - h,
+    ...runnerBounds(),
     frame: false, transparent: true, hasShadow: false, thickFrame: false, roundedCorners: false, resizable: false, alwaysOnTop: true, skipTaskbar: true, show: false,
     icon: path.join(ASSETS, 'icon.png'),
-    webPreferences: { preload: path.join(__dirname, 'preload.js') },
+    webPreferences: { preload: path.join(__dirname, 'preload.js'), backgroundThrottling: false },
   });
   const query = { mode: 'runner', id: 0, title: '~/runner' };
   const qs = new URLSearchParams(query).toString();
@@ -1350,13 +1860,38 @@ function toggleRunner() {
   // Above everything: other topmost windows, full-screen apps and the taskbar.
   runnerWin.setAlwaysOnTop(true, 'screen-saver');
   runnerWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-  showWhenReady(runnerWin, () => { runnerWin?.show(); runnerWin?.moveTop(); runnerWin?.focus(); });
   runnerWin.on('show', () => runnerWin?.moveTop());
   runnerWin.pinned = false; // once a task is sent the panel stays open until Esc / ✕
-  runnerWin.on('blur', () => { if (runnerWin && !runnerWin.pinned) runnerWin.close(); });
-  runnerWin.on('closed', () => { runnerWin = null; });
+  runnerWin.on('blur', () => { if (runnerShown && !runnerWin?.pinned) hideRunnerWin(); });
+  runnerWin.webContents.on('did-start-loading', () => { runnerReady = false; });
+  runnerWin.on('closed', () => { runnerWin = null; runnerShown = false; runnerReady = false; });
 }
-ipcMain.on('hideRunner', () => runnerWin?.close());
+function showRunnerNow() {
+  if (!runnerWin || runnerWin.isDestroyed() || !runnerShown) return;
+  runnerWin.show(); runnerWin.moveTop(); runnerWin.focus();
+  runnerWin.webContents.send('runner-show'); // the page starts listening only now (never while hidden)
+  dlog('runner shown');
+}
+function hideRunnerWin() {
+  if (!runnerWin || !runnerShown) return;
+  runnerShown = false;
+  runnerWin.hide();
+  runnerWin.pinned = false;
+  runnerWin.setBounds(runnerBounds());
+  runnerWin.webContents.reload(); // drop this session's chat, mic and speech; ready for the next Alt+Space
+  // a timer / stopwatch started from the command bar keeps showing: bottom-right, until the user is back in Genisys
+  setTimeout(() => { if (toolActive && !toolStillLive(toolActive)) toolActive = null; if (toolActive && !userInApp()) showTool({ card: toolActive }); }, 200);
+}
+function toggleRunner() {
+  dlog(`runner hotkey (${runnerShown ? 'hide' : runnerReady ? 'show, preloaded' : 'show, still loading'})`);
+  if (runnerShown) return hideRunnerWin();
+  makeRunner();
+  runnerShown = true;
+  if (runnerReady) showRunnerNow();
+  else showWhenReady(runnerWin, showRunnerNow, 3000); // first press before it finished loading: shown when its page is ready
+}
+ipcMain.on('pageReady', (e) => { if (runnerWin && !runnerWin.isDestroyed() && e.sender === runnerWin.webContents) runnerReady = true; });
+ipcMain.on('hideRunner', () => hideRunnerWin());
 // A task was sent: grow upward into a full results panel (bottom edge stays put, always fully on screen).
 ipcMain.on('runnerOpen', () => {
   if (!runnerWin) return;
@@ -1434,11 +1969,11 @@ function openAgent(kind, task = '', opts = {}, parentId) {
   pushAgents();
   return id;
 }
-ipcMain.on('open', (e, kind, task, opts) => openAgent(kind === 'script' ? 'script' : 'agent', String(task || ''), opts || {}, e.sender.id));
+ipcMain.on('open', (e, kind, task, opts) => openAgent('agent', String(task || ''), opts || {}, e.sender.id)); // Script Writer is off for now
 // Several windows at once, a moment apart so the machine isn't hit by 8 window creations in one frame.
 ipcMain.on('openMany', (e, specs) => {
   const pid = e.sender.id;
-  [].concat(specs || []).slice(0, 8).forEach((sp, i) => setTimeout(() => openAgent(sp.kind === 'script' ? 'script' : 'agent', String(sp.task || ''), sp.opts || {}, pid), i * 160));
+  [].concat(specs || []).slice(0, 8).forEach((sp, i) => setTimeout(() => openAgent('agent', String(sp.task || ''), sp.opts || {}, pid), i * 160));
 });
 // A managed agent finished: tell the window that spawned the team.
 ipcMain.on('agentDone', (_e, info) => {
@@ -1507,11 +2042,16 @@ async function prepare() {
 app.whenReady().then(() => {
   if (PREPARE) return prepare();
   dlog('ready');
+  startMediaServer();
   // productName changed my-app → Executor, which moved userData; carry the API key over once.
   const cfg = path.join(app.getPath('userData'), 'config.json');
   const old = path.join(app.getPath('appData'), 'my-app', 'config.json');
   if (!fs.existsSync(cfg) && fs.existsSync(old)) { fs.mkdirSync(path.dirname(cfg), { recursive: true }); fs.copyFileSync(old, cfg); }
   db.openDb(path.join(app.getPath('userData'), 'executor.db'));
+  // Mic for voice input: only this app's own pages get media, and only audio. Other permissions keep Electron's default.
+  const ownPage = (u) => { try { const x = new URL(u); return x.protocol === 'file:' || (!!MAIN_WINDOW_VITE_DEV_SERVER_URL && x.origin === new URL(MAIN_WINDOW_VITE_DEV_SERVER_URL).origin); } catch { return false; } };
+  session.defaultSession.setPermissionRequestHandler((wc, perm, cb, details) => cb(perm !== 'media' || (ownPage(details.requestingUrl || wc.getURL()) && !(details.mediaTypes || []).includes('video'))));
+  session.defaultSession.setPermissionCheckHandler((wc, perm, origin) => perm !== 'media' || ownPage(origin || wc?.getURL() || ''));
   // Seed the extra free accounts once (new ones only); the existing rotation then switches key when one hits its limit.
   // Manage or remove them in Settings → Keys.
   const seeded = db.getSetting('seededKeys', []);
@@ -1545,6 +2085,22 @@ app.whenReady().then(() => {
 
   for (const m of db.listMemory()) { const fixed = m.cmds.map(fixCmd); if (fixed.some((c, i) => c !== m.cmds[i])) db.updateMemory(m.id, fixed); }
   syncBats();
+  // Zoom, the app's own way (every window): Ctrl+= / Ctrl++ bigger, Ctrl+- smaller, Ctrl+0 back to 100%. Kept 50-200%
+  // and saved by Genisys, so a stray zoom never sticks forever (Chromium's own per-site zoom is overridden on load).
+  const ZOOMS = [0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2];
+  const zoomNow = () => { const z = Number(db.prefAll().zoom); return ZOOMS.includes(z) ? z : 1; };
+  app.on('web-contents-created', (_e, wc) => {
+    wc.on('did-finish-load', () => { try { wc.setZoomFactor(zoomNow()); } catch {} });
+    wc.on('before-input-event', (ev, i) => {
+      if (i.type !== 'keyDown' || !i.control || i.alt) return;
+      const k = i.key, z = zoomNow(), at = ZOOMS.indexOf(z);
+      const next = k === '0' ? 1 : (k === '=' || k === '+') ? ZOOMS[Math.min(ZOOMS.length - 1, at + 1)] : (k === '-' || k === '_') ? ZOOMS[Math.max(0, at - 1)] : null;
+      if (next == null) return;
+      ev.preventDefault();
+      db.prefSet('zoom', String(next));
+      for (const w of BrowserWindow.getAllWindows()) { try { w.webContents.setZoomFactor(next); } catch {} }
+    });
+  });
   mainWin = createWindow({ mode: 'main' });
   // Login launch starts hidden-to-taskbar (minimized) instead of popping up.
   if (process.argv.includes('--autostart')) mainWin.once('ready-to-show', () => { mainWin.showInactive(); mainWin.minimize(); });
@@ -1564,6 +2120,10 @@ app.whenReady().then(() => {
   });
   mainWin.on('session-end', () => { quitting = true; }); // Windows is shutting down: let it close
   mainWin.on('closed', () => { mainWin = null; app.quit(); });
+  // leaving Genisys with something live (timer, stopwatch, music): it follows to the bottom-right; coming back hides it
+  const away = () => setTimeout(() => { if (toolActive && !toolStillLive(toolActive)) toolActive = null; if (toolActive && !userInApp() && !BrowserWindow.getFocusedWindow()) showTool({ card: toolActive }); }, 250);
+  mainWin.on('blur', away); mainWin.on('minimize', away); mainWin.on('hide', away);
+  mainWin.on('focus', () => { if (!toolPinned && toolWin?.isVisible() && toolWin.webContents) toolWin.webContents.executeJavaScript("!!document.querySelector('.ringing')").then((r) => { if (!r) toolWin?.hide(); }).catch(() => {}); });
   // System-wide hotkeys (work from any app while Genisys runs); keep in sync with the F1 help panel.
   // Another app can already own a key combo; log it so a 'hotkey does nothing' report can be checked in genisys-debug.log.
   const hotkey = (keys, fn) => { const ok = globalShortcut.register(keys, fn); dlog('hotkey', keys, ok ? 'registered' : 'TAKEN by another app'); return ok; };
@@ -1574,7 +2134,7 @@ app.whenReady().then(() => {
     if (hotkey('Alt+Shift+Space', toggleRunner)) notify('problem', 'Alt+Space is taken by another app, so the runner uses Alt+Shift+Space.');
   }
   hotkey('Control+Alt+N', () => openAgent('agent'));
-  hotkey('Control+Alt+S', () => openAgent('script'));
+  // Ctrl+Alt+S (Script Writer) is off for now
   // Tray icon: Genisys lives here while its window is closed (built after the hotkeys so it shows the keys in use).
   tray = new Tray(path.join(ASSETS, 'icon.ico'));
   tray.setToolTip('Genisys');
@@ -1604,12 +2164,17 @@ app.whenReady().then(() => {
   setTimeout(() => helper.warm(), 10000); // so the first volume / PC control is instant
   setTimeout(() => loadStoreApps().catch(() => {}), 4000); // Store apps (WhatsApp…) so "open whatsapp" finds the desktop app
   setInterval(() => loadStoreApps().catch(() => {}), 30 * 60e3);
+  try { armReminders(); } catch (e) { dlog('reminders failed', e.message); }
+  setTimeout(() => { if (net.isOnline()) learnCatchUp().catch(() => {}); }, 60000); // after start-up has settled
+  setTimeout(() => refreshCatalog(), 9000); // the catalog, after the Store apps are known
+  setInterval(() => refreshCatalog(), 30 * 60e3);
   // Automatic updates: installs only while no Genisys window is open on screen (Settings › Automatic updates).
   updater = startUpdater({
     log: dlog,
     enabled: () => db.getSetting('autoUpdate', true) !== false,
     isIdle: () => BrowserWindow.getAllWindows().every((w) => w.isDestroyed() || !w.isVisible()),
     report: (e) => cloud.reportError('error', e),
+    downloaded: (v) => { for (const w of BrowserWindow.getAllWindows()) try { w.webContents.send('update-ready', v); } catch {} },
     found: (v) => {
       notify('update', `Genisys ${v} is available. It installs by itself when Genisys is closed, or install it now in Notes.`);
       if (!Notification.isSupported()) return;
@@ -1628,6 +2193,7 @@ app.whenReady().then(() => {
     });
   }
   dlog('main window created');
+  setTimeout(makeRunner, 4000); // the Alt+Space bar loads hidden after startup, so the hotkey is instant
 }).catch((e) => { dlog('startup failed', e?.stack || e); cloud.reportError('crash', e); });
 let quitting = false, tray = null; // tray: kept in a variable so it is not garbage-collected (the icon would vanish)
 app.on('before-quit', () => { quitting = true; });

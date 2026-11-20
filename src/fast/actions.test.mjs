@@ -122,10 +122,10 @@ test('file_info: size, dates and place of one file or folder; outside the allowe
 // ---- Stage 3: folder names resolve by meaning; every listing rescans ----
 function tree(over = {}) {
   const roots = []; let refreshed = 0;
-  const dirs = { '/u/Videos': ['Movies\\', 'MEMES\\', 'a.mp4'], '/u/Downloads': ['Zips\\'], '/u/Documents': [], '/u/Videos/Movies': ['Show\\'] };
+  const dirs = { 'C:\\u\\Videos': ['Movies\\', 'MEMES\\', 'a.mp4'], 'C:\\u\\Downloads': ['Zips\\'], 'C:\\u\\Documents': [], 'C:\\u\\Videos\\Movies': ['Show\\'] };
   const d = {
-    shell: {}, resolveApp: () => null, spawnDetached() {}, paths: { home: '/u', videos: '/u/Videos', downloads: '/u/Downloads', documents: '/u/Documents' },
-    findFiles: async () => ({ matches: over.matches || [{ path: '/u/Videos/MEMES', score: 0.9 }] }),
+    shell: {}, resolveApp: () => null, spawnDetached() {}, paths: { home: 'C:\\u', videos: 'C:\\u\\Videos', downloads: 'C:\\u\\Downloads', documents: 'C:\\u\\Documents' },
+    findFiles: async () => ({ matches: over.matches || [{ path: 'C:\\u\\Videos\\MEMES', score: 0.9 }] }),
     exists: () => true, isAllowed: () => true, isDir: (p) => p in dirs,
     listDir: (p) => dirs[p] || [],
     scanFiles: async (root) => { roots.push(root); return { files: [], partial: false }; },
@@ -136,14 +136,14 @@ function tree(over = {}) {
 test('folders: "in movies" / "movie folder" pick the real Movies folder, not MEMES or the Videos root', async () => {
   for (const where of ['movies', 'movie folder', 'my movies folder', 'Movies', 'videos/movie folder', 'videos/movies', 'movie']) {
     const t = tree(); await t.A.browse_files({ in: where, kind: 'video' });
-    assert.deepEqual(t.roots, ['/u/Videos/Movies'], where);
+    assert.deepEqual(t.roots, ['C:\\u\\Videos\\Movies'], where);
   }
 });
 test('folders: library names, nested names, no wrong guess', async () => {
-  let t = tree(); await t.A.browse_files({ in: 'videos', kind: 'video' }); assert.deepEqual(t.roots, ['/u/Videos']);
-  t = tree(); await t.A.browse_files({ in: 'downloads/zip', kind: 'any' }); assert.deepEqual(t.roots, ['/u/Downloads/Zips']);
+  let t = tree(); await t.A.browse_files({ in: 'videos', kind: 'video' }); assert.deepEqual(t.roots, ['C:\\u\\Videos']);
+  t = tree(); await t.A.browse_files({ in: 'downloads/zip', kind: 'any' }); assert.deepEqual(t.roots, ['C:\\u\\Downloads\\Zips']);
   t = tree(); await t.A.browse_files({ in: 'dowloads', kind: 'any' }); assert.deepEqual(t.roots, []); // typo of a library name: not in the fake search; no wrong folder
-  t = tree({ matches: [{ path: '/u/Videos/MEMES', score: 0.9 }] });
+  t = tree({ matches: [{ path: 'C:\\u\\Videos\\MEMES', score: 0.9 }] });
   const r = await t.A.browse_files({ in: 'movie night', kind: 'video' });
   assert.equal(r.status, 'fall'); assert.deepEqual(t.roots, [], 'a fuzzy hit whose name does not fit is never used');
   t = tree(); const r2 = await t.A.browse_files({ in: 'videos/nothing here', kind: 'video' }); assert.equal(r2.status, 'fall');
@@ -176,3 +176,67 @@ test('unknown profile or no profile list: no wrong launch, the reason lists the 
   assert.equal(r.status, 'fall'); assert.match(r.reason, /Kevin \(Profile 1\)/); assert.equal(a.calls.length, 0);
   const b = browserFake([]); assert.equal((await b.A.open_url({ url: 'https://x.com', profile: 'kevin' })).status, 'fall'); assert.equal(b.calls.length, 0);
 });
+
+test('catalog action: empty, summary, search, and open_app counts a use', async () => {
+  const { buildEntries } = await import('./catalog.js');
+  const es = buildEntries([{ kind: 'pwa', name: 'Spotify', launch: { type: 'lnk', target: 'C:\\s.lnk', args: '--app-id=a' }, source: 'startmenu' }, { kind: 'app', name: 'Notepad', launch: { type: 'exe', target: 'C:\\n.exe' }, source: 'startmenu' }]);
+  const touched = [];
+  const dd = { shell: { openPath: async () => '', openExternal: async () => {} }, resolveApp: (n) => (n === 'notepad' ? 'C:\\n.exe' : null), spawnDetached() {}, paths: {}, exists: () => true, isAllowed: () => true, catalogTouch: (t) => touched.push(t), catalog: () => es };
+  const A = makeActions(dd);
+  assert.match((await A.catalog({ op: 'summary' })).message, /2 things.*1 pwa.*1 app/);
+  const s = await A.catalog({ op: 'search', query: 'spotfy' });
+  assert.match(s.message, /pwa\s+Spotify\s+->\s+C:\\s\.lnk --app-id=a/);
+  assert.match((await makeActions({ ...dd, catalog: () => [] }).catalog({ op: 'summary' })).message, /empty/);
+  const r = await A.open_app({ name: 'notepad' });
+  assert.equal(r.status, 'done'); assert.deepEqual(touched, ['notepad']);
+});
+
+test('open_app predicts from the catalog: typo -> the Chrome app by its shortcut; two close -> a choose card; id launches exactly', async () => {
+  const { buildEntries } = await import('./catalog.js');
+  const es = buildEntries([
+    { kind: 'pwa', name: 'Spotify', launch: { type: 'lnk', target: 'C:\\s\\Spotify.lnk', args: '--app-id=a' }, source: 's' },
+    { kind: 'app', name: 'OneDrive', launch: { type: 'exe', target: 'C:\\od.exe' }, source: 's' },
+    { kind: 'app', name: 'OneNote', launch: { type: 'exe', target: 'C:\\on.exe' }, source: 's' },
+  ]);
+  const calls = [];
+  const dd = { shell: { openPath: async () => '', openExternal: async () => {} }, resolveApp: () => 'C:\\chrome.exe', spawnDetached: (...a) => calls.push(a), paths: {}, exists: () => true, isAllowed: () => true, catalog: () => es };
+  const A = makeActions(dd);
+  const r = await A.open_app({ name: 'spotfy' });
+  assert.equal(r.status, 'done'); assert.deepEqual(calls[0], ['C:\\s\\Spotify.lnk', []]); assert.match(r.message, /Spotify \(pwa/);
+  const c = await A.open_app({ name: 'one' });
+  assert.equal(c.status, 'choose'); assert.equal(c.options.length, 2); assert.ok(c.options[0].params.id);
+  await A.open_app(c.options[1].params);
+  assert.equal(calls.length, 2);
+  assert.equal((await A.open_app({ id: 'app:gone' })).status, 'fall');
+  const p = await A.catalog({ op: 'predict', query: 'spotfy' });
+  assert.match(p.message, /DO Spotify/);
+});
+
+// ---- chat_send: opens the chat and attaches, never sends; deep app search once
+test('chat_send: checks the file and app, opens the app, hands the chat app the contact and file', async () => {
+  const f = 'C:\\Users\\me\\Documents\\list.pdf';
+  const sent = [];
+  const B = makeActions({ ...fakeDeps(f), chatSend: async (o) => { sent.push(o); return { ok: true }; } });
+  assert.equal((await B.chat_send({ app: 'WhatsApp', to: 'Kevin', path: f })).status, 'done');
+  assert.deepEqual(sent[0], { title: 'WhatsApp', search: '^f', to: 'Kevin', path: f, text: '' });
+  assert.equal((await B.chat_send({ app: 'whatsapp', to: 'Kevin', path: 'D:\\secret.pdf' })).status, 'fall'); // outside allowed folders
+  assert.equal((await B.chat_send({ app: 'whatsapp', to: 'Kevin', path: 'C:\\Users\\me\\nope.pdf' })).status, 'fall'); // missing file
+  assert.equal((await B.chat_send({ app: 'teams', to: 'Kevin', text: 'hi' })).status, 'fall'); // no built-in way: the AI scripts it
+  assert.equal((await B.chat_send({ app: 'whatsapp', to: '', text: 'hi' })).status, 'fall');
+  assert.equal(sent.length, 1);
+});
+test('open_app: a missing app gets one deep search, found paths launch', async () => {
+  let asked = 0;
+  const calls = [];
+  const B = makeActions({ ...fakeDeps(), spawnDetached: (exe) => calls.push(exe), findAppDeep: async (n) => { asked++; return n === 'mytool' ? 'D:\\Tools\\MyTool\\bin\\mytool.exe' : null; } });
+  assert.equal((await B.open_app({ name: 'mytool' })).status, 'done');
+  assert.deepEqual(calls, ['D:\\Tools\\MyTool\\bin\\mytool.exe']);
+  assert.equal((await B.open_app({ name: 'nothing' })).status, 'fall');
+  assert.equal(asked, 2);
+});
+function fakeDeps(file) {
+  return {
+    shell: { openPath: async () => '', openExternal: async () => {} }, resolveApp: (n) => (n === 'whatsapp' ? 'C:\\w\\WhatsApp.exe' : null), spawnDetached() {},
+    findFiles: async () => ({ matches: [] }), paths: {}, exists: (p) => p === file, isAllowed: (p) => p.startsWith('C:\\Users\\me\\'),
+  };
+}
